@@ -65,6 +65,14 @@ def init_db():
     )
     """)
 
+    # КЛЮЧЕВАЯ ЗАЩИТА:
+    # один good_id не может иметь больше одной активной аренды
+    conn.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_active_good
+    ON rentals(good_id)
+    WHERE closed = 0
+    """)
+
     conn.commit()
     conn.close()
 
@@ -115,6 +123,18 @@ def get_good_by_marker(marker: str):
     return row
 
 
+def get_good_by_id(good_id: int):
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT *
+        FROM goods
+        WHERE id = ?
+        LIMIT 1
+    """, (good_id,)).fetchone()
+    conn.close()
+    return row
+
+
 def count_free_goods():
     conn = get_connection()
     row = conn.execute("""
@@ -150,18 +170,20 @@ def create_rental(order_id: str, lot_id: int, chat_id: str, buyer_id: int | None
                   buyer_username: str | None, good_id: int, code: str,
                   start_ts: int, paid_end_ts: int, grace_end_ts: int):
     conn = get_connection()
-    conn.execute("""
-        INSERT INTO rentals(
-            order_id, lot_id, chat_id, buyer_id, buyer_username, good_id,
-            code, start_ts, paid_end_ts, grace_end_ts
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        order_id, lot_id, str(chat_id), buyer_id, buyer_username,
-        good_id, code, start_ts, paid_end_ts, grace_end_ts
-    ))
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute("""
+            INSERT INTO rentals(
+                order_id, lot_id, chat_id, buyer_id, buyer_username, good_id,
+                code, start_ts, paid_end_ts, grace_end_ts
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            order_id, lot_id, str(chat_id), buyer_id, buyer_username,
+            good_id, code, start_ts, paid_end_ts, grace_end_ts
+        ))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_rental_by_order_id(order_id: str):

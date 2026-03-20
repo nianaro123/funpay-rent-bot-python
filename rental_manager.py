@@ -2,8 +2,10 @@
 
 import logging
 import secrets
+import sqlite3
 import time
 
+from lot_manager import LotManager
 from storage import (
     get_good_by_marker,
     count_free_goods,
@@ -29,6 +31,7 @@ class RentalManager:
 
     def __init__(self, acc):
         self.acc = acc
+        self.lot_manager = LotManager(acc)
 
     def generate_code(self, length: int = 8) -> str:
         return secrets.token_hex(8)[:length].upper()
@@ -74,19 +77,30 @@ class RentalManager:
         grace_end_ts = paid_end_ts + self.GRACE_SECONDS
         code = self.generate_code()
 
-        # lot_id здесь больше не используем как обязательное поле выдачи
-        create_rental(
-            order_id=order_id,
-            lot_id=0,
-            chat_id=str(chat_id),
-            buyer_id=buyer_id,
-            buyer_username=buyer_username,
-            good_id=good["id"],
-            code=code,
-            start_ts=start_ts,
-            paid_end_ts=paid_end_ts,
-            grace_end_ts=grace_end_ts,
-        )
+        try:
+            create_rental(
+                order_id=order_id,
+                lot_id=good["lot_id"],
+                chat_id=str(chat_id),
+                buyer_id=buyer_id,
+                buyer_username=buyer_username,
+                good_id=good["id"],
+                code=code,
+                start_ts=start_ts,
+                paid_end_ts=paid_end_ts,
+                grace_end_ts=grace_end_ts,
+            )
+        except sqlite3.IntegrityError:
+            LOGGER.warning(
+                "Попытка двойной выдачи good_id=%s для order_id=%s",
+                good["id"],
+                order_id,
+            )
+            self.acc.send_message(
+                chat_id,
+                "❌ Этот аккаунт уже занят или только что был выдан другому покупателю."
+            )
+            return False
 
         lines = [
             "✅ Данные для входа:",
@@ -102,11 +116,24 @@ class RentalManager:
             f"🧾 Ваш уникальный код: {code}",
             f"⏱ Время аренды: {hours} ч.",
             "⚠️ За 10 минут до окончания аренды я отправлю предупреждение.",
-            "⌛ После завершения аренды действует буфер 15 минут.",
         ])
 
-        message = "\n".join(lines)
-        self.acc.send_message(chat_id, message)
+        self.acc.send_message(chat_id, "\n".join(lines))
+
+        try:
+            if good["lot_id"]:
+                self.lot_manager.set_lot_busy(int(good["lot_id"]))
+                LOGGER.info(
+                    "Лот %s переведён в статус 'Занят!' после выдачи заказа %s",
+                    good["lot_id"],
+                    order_id,
+                )
+        except Exception as e:
+            LOGGER.exception(
+                "Не удалось сменить название лота %s на 'Занят!': %s",
+                good["lot_id"],
+                e,
+            )
 
         LOGGER.info(
             "Выдан аккаунт good_id=%s, marker=%s, order_id=%s",
@@ -175,13 +202,26 @@ class RentalManager:
 
             if rental["ended_msg_sent"] == 0 and now >= rental["paid_end_ts"]:
                 try:
-                    self.acc.send_message(chat_id, "⛔ Время аренды завершено. У вас есть ещё 15 минут буфера.")
+                    self.acc.send_message(chat_id, "⛔ Время аренды завершено. Пожалуйста, покиньте аккаунт и подтвердите лот.")
                     mark_ended_msg(order_id)
                 except Exception as e:
                     LOGGER.exception("Ошибка сообщения о завершении order_id=%s: %s", order_id, e)
 
             if now >= rental["grace_end_ts"]:
                 try:
+                    try:
+                        lot_id = int(rental["good_lot_id"]) if rental["good_lot_id"] else 0
+                        if lot_id:
+                            self.lot_manager.set_lot_free(lot_id)
+                            LOGGER.info("Лот %s переведён в статус 'Свободен!'", lot_id)
+                    except Exception as e:
+                        LOGGER.exception(
+                            "Не удалось сменить название лота обратно на 'Свободен!' для order_id=%s: %s",
+                            order_id,
+                            e,
+                        )
+
                     close_rental(order_id)
+                    LOGGER.info("Аренда закрыта order_id=%s", order_id)
                 except Exception as e:
                     LOGGER.exception("Ошибка закрытия аренды order_id=%s: %s", order_id, e)
