@@ -2,23 +2,22 @@
 
 import sqlite3
 
-DB_NAME = "rent_bot.sqlite3"
+DB_PATH = "rent_bot.sqlite3"
 
 
 def get_connection():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def init_db():
     conn = get_connection()
-    cur = conn.cursor()
 
-    cur.execute("""
+    conn.execute("""
     CREATE TABLE IF NOT EXISTS goods (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        lot_id INTEGER NOT NULL DEFAULT 0,
+        lot_id INTEGER NOT NULL,
         title TEXT NOT NULL,
         login TEXT NOT NULL,
         password TEXT NOT NULL,
@@ -27,11 +26,11 @@ def init_db():
     )
     """)
 
-    cur.execute("""
+    conn.execute("""
     CREATE TABLE IF NOT EXISTS rentals (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         order_id TEXT UNIQUE NOT NULL,
-        lot_id INTEGER NOT NULL DEFAULT 0,
+        lot_id INTEGER NOT NULL,
         chat_id TEXT NOT NULL,
         buyer_id INTEGER,
         buyer_username TEXT,
@@ -48,7 +47,7 @@ def init_db():
     )
     """)
 
-    cur.execute("""
+    conn.execute("""
     CREATE TABLE IF NOT EXISTS extensions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         rental_id INTEGER NOT NULL,
@@ -56,6 +55,13 @@ def init_db():
         hours_added INTEGER NOT NULL,
         created_ts INTEGER NOT NULL,
         FOREIGN KEY(rental_id) REFERENCES rentals(id)
+    )
+    """)
+
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS chat_state (
+        chat_id TEXT PRIMARY KEY,
+        last_message_id TEXT
     )
     """)
 
@@ -248,5 +254,27 @@ def add_extension(rental_id: int, source: str, hours_added: int, created_ts: int
         INSERT INTO extensions(rental_id, source, hours_added, created_ts)
         VALUES (?, ?, ?, ?)
     """, (rental_id, source, hours_added, created_ts))
+    conn.commit()
+    conn.close()
+
+
+def get_last_message_id(chat_id: str):
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT last_message_id
+        FROM chat_state
+        WHERE chat_id = ?
+    """, (str(chat_id),)).fetchone()
+    conn.close()
+    return row["last_message_id"] if row else None
+
+
+def set_last_message_id(chat_id: str, message_id: str):
+    conn = get_connection()
+    conn.execute("""
+        INSERT INTO chat_state (chat_id, last_message_id)
+        VALUES (?, ?)
+        ON CONFLICT(chat_id) DO UPDATE SET last_message_id=excluded.last_message_id
+    """, (str(chat_id), str(message_id)))
     conn.commit()
     conn.close()
