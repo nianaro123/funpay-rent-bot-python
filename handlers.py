@@ -104,8 +104,9 @@ class AutoReplyBot:
             lines = ["🔑 Ваши коды аренд:"]
             for i, rental in enumerate(rentals, start=1):
                 lines.append(
-                    f"{i}. {rental['title']} — код: {rental['code']}"
+                    f"{i}. {rental['login']} — код: {rental['code']}"
                 )
+
             self.acc.send_message(chat_id, "\n".join(lines))
             return
 
