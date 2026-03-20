@@ -3,8 +3,8 @@
 from FunPayAPI.updater.events import NewMessageEvent
 from rental_manager import RentalManager
 from storage import (
-    get_active_rental_by_buyer,
     get_last_message_id,
+    list_active_rentals_by_buyer,
     set_last_message_id,
 )
 from config import WELCOME_TEXT, HELP_TEXT
@@ -36,7 +36,6 @@ class AutoReplyBot:
             return
 
         try:
-            # 1. системные сообщения FunPay
             if author_id == 0:
                 low = text.lower()
 
@@ -50,12 +49,10 @@ class AutoReplyBot:
 
                 return
 
-            # 2. команды
             if text.startswith("/"):
                 self.handle_command(chat_id, text, author_id)
                 return
 
-            # 3. обычное сообщение -> приветствие только 1 раз на чат
             if chat_id not in self.welcomed_chats:
                 self.acc.send_message(chat_id, WELCOME_TEXT)
                 self.welcomed_chats.add(chat_id)
@@ -76,50 +73,54 @@ class AutoReplyBot:
             self.acc.send_message(chat_id, f"Свободных аккаунтов: {free}")
             return
 
-        if cmd == "/time":
-            if author_id is None:
-                self.acc.send_message(chat_id, "Не удалось определить пользователя.")
+        if author_id is None:
+            self.acc.send_message(chat_id, "Не удалось определить пользователя.")
+            return
+
+        rentals = list_active_rentals_by_buyer(author_id)
+
+        if cmd == "/acc":
+            if not rentals:
+                self.acc.send_message(chat_id, "У вас нет активных аренд")
                 return
 
-            rental = get_active_rental_by_buyer(author_id)
-
-            if not rental:
-                self.acc.send_message(chat_id, "У вас нет активной аренды")
-                return
-
-            remaining = self.rm.get_remaining_time(rental)
-            self.acc.send_message(chat_id, f"Осталось времени: {remaining}")
+            lines = ["📄 Ваши активные аренды:"]
+            for i, rental in enumerate(rentals, start=1):
+                lines.append(
+                    f"\n{i}. {rental['title']}\n"
+                    f"Логин: {rental['login']}\n"
+                    f"Пароль: {rental['password']}"
+                )
+                if rental["note"]:
+                    lines.append(f"Примечание: {rental['note']}")
+            self.acc.send_message(chat_id, "\n".join(lines))
             return
 
         if cmd == "/code":
-            if author_id is None:
-                self.acc.send_message(chat_id, "Не удалось определить пользователя.")
+            if not rentals:
+                self.acc.send_message(chat_id, "У вас нет активных аренд")
                 return
 
-            rental = get_active_rental_by_buyer(author_id)
-
-            if not rental:
-                self.acc.send_message(chat_id, "У вас нет активной аренды")
-                return
-
-            self.acc.send_message(chat_id, f"Ваш код аренды: {rental['code']}")
+            lines = ["🔑 Ваши коды аренд:"]
+            for i, rental in enumerate(rentals, start=1):
+                lines.append(
+                    f"{i}. {rental['title']} — код: {rental['code']}"
+                )
+            self.acc.send_message(chat_id, "\n".join(lines))
             return
 
-        if cmd == "/acc":
-            if author_id is None:
-                self.acc.send_message(chat_id, "Не удалось определить пользователя.")
+        if cmd == "/time":
+            if not rentals:
+                self.acc.send_message(chat_id, "У вас нет активных аренд")
                 return
 
-            rental = get_active_rental_by_buyer(author_id)
-
-            if not rental:
-                self.acc.send_message(chat_id, "У вас нет активной аренды")
-                return
-
-            self.acc.send_message(
-                chat_id,
-                f"Логин: {rental['login']}\nПароль: {rental['password']}"
-            )
+            lines = ["⏱ Ваши активные аренды:"]
+            for i, rental in enumerate(rentals, start=1):
+                remaining = self.rm.get_remaining_time(rental)
+                lines.append(
+                    f"{i}. {rental['title']} — осталось: {remaining}"
+                )
+            self.acc.send_message(chat_id, "\n".join(lines))
             return
 
         self.acc.send_message(chat_id, "Неизвестная команда. Напишите /help")

@@ -65,8 +65,6 @@ def init_db():
     )
     """)
 
-    # КЛЮЧЕВАЯ ЗАЩИТА:
-    # один good_id не может иметь больше одной активной аренды
     conn.execute("""
     CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_active_good
     ON rentals(good_id)
@@ -164,6 +162,20 @@ def get_active_rental_by_buyer(buyer_id: int):
     """, (buyer_id,)).fetchone()
     conn.close()
     return row
+
+
+def list_active_rentals_by_buyer(buyer_id: int):
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT r.*, g.login, g.password, g.note, g.title, g.lot_id AS good_lot_id
+        FROM rentals r
+        JOIN goods g ON g.id = r.good_id
+        WHERE r.closed = 0
+          AND r.buyer_id = ?
+        ORDER BY r.id DESC
+    """, (buyer_id,)).fetchall()
+    conn.close()
+    return rows
 
 
 def create_rental(order_id: str, lot_id: int, chat_id: str, buyer_id: int | None,
