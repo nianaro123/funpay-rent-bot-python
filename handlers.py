@@ -47,6 +47,10 @@ class AutoReplyBot:
                     self.rm.handle_review_notice(chat_id, text)
                     return
 
+                if "вернул деньги покупателю" in low and "заказ" in low:
+                    self.rm.handle_refund_notice(chat_id, text)
+                    return
+
                 return
 
             if text.startswith("/"):

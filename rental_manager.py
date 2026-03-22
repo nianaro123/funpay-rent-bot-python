@@ -1,6 +1,7 @@
 # rental_manager.py
 
 import logging
+import re
 import secrets
 import sqlite3
 import time
@@ -116,6 +117,7 @@ class RentalManager:
             f"🧾 Ваш уникальный код: {code}",
             f"⏱ Время аренды: {hours} ч.",
             "⚠️ За 10 минут до окончания аренды я отправлю предупреждение.",
+            "⌛ После завершения аренды действует буфер 15 минут.",
         ])
 
         self.acc.send_message(chat_id, "\n".join(lines))
@@ -146,6 +148,51 @@ class RentalManager:
             chat_id,
             "⭐ Спасибо за отзыв! Функция бонусного продления будет подключена следующим шагом."
         )
+
+    def handle_refund_notice(self, chat_id: int | str, text: str) -> None:
+        match = re.search(r"#([A-Z0-9]+)", text)
+        if not match:
+            LOGGER.warning("Не удалось извлечь order_id из сообщения о возврате: %s", text)
+            return
+
+        order_id = match.group(1)
+        rental = get_rental_by_order_id(order_id)
+
+        if not rental:
+            LOGGER.info("Для возврата order_id=%s активная аренда не найдена", order_id)
+            return
+
+        if rental["closed"]:
+            LOGGER.info("Аренда order_id=%s уже закрыта к моменту обработки возврата", order_id)
+            return
+
+        try:
+            lot_id = int(rental["lot_id"]) if rental["lot_id"] else 0
+            if lot_id:
+                self.lot_manager.set_lot_free(lot_id)
+                LOGGER.info("Лот %s переведён в статус 'Свободен!' после возврата по заказу %s", lot_id, order_id)
+        except Exception as e:
+            LOGGER.exception(
+                "Не удалось вернуть лот в статус 'Свободен!' после возврата order_id=%s: %s",
+                order_id,
+                e,
+            )
+
+        try:
+            close_rental(order_id)
+            LOGGER.info("Аренда закрыта после возврата средств, order_id=%s", order_id)
+        except Exception as e:
+            LOGGER.exception("Не удалось закрыть аренду после возврата order_id=%s: %s", order_id, e)
+            return
+
+        try:
+            self.acc.send_message(
+                chat_id,
+                f"ℹ️ Заказ #{order_id}: возврат средств зафиксирован. "
+                "Аренда закрыта."
+            )
+        except Exception as e:
+            LOGGER.exception("Не удалось отправить сообщение после возврата order_id=%s: %s", order_id, e)
 
     def extend_active_rental_for_buyer(
         self,
