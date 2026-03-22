@@ -195,14 +195,21 @@ class RentalManager:
             time_left = rental["paid_end_ts"] - now
             if rental["warned_10m"] == 0 and 0 < time_left <= self.WARNING_SECONDS:
                 try:
-                    self.acc.send_message(chat_id, "⚠️ До окончания аренды осталось 10 минут.")
+                    self.acc.send_message(
+                        chat_id,
+                        f"⚠️ Заказ #{order_id}: до окончания аренды осталось 10 минут."
+                    )
                     mark_warned(order_id)
                 except Exception as e:
                     LOGGER.exception("Ошибка предупреждения order_id=%s: %s", order_id, e)
 
             if rental["ended_msg_sent"] == 0 and now >= rental["paid_end_ts"]:
                 try:
-                    self.acc.send_message(chat_id, "⛔ Время аренды завершено. Пожалуйста, покиньте аккаунт и подтвердите лот.")
+                    self.acc.send_message(
+                        chat_id,
+                        f"⛔ Заказ #{order_id}: время аренды завершено.\n"
+                        "Пожалуйста, покиньте аккаунт и подтвердите лот."
+                    )
                     mark_ended_msg(order_id)
                 except Exception as e:
                     LOGGER.exception("Ошибка сообщения о завершении order_id=%s: %s", order_id, e)
