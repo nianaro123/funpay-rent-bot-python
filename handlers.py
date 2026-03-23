@@ -1,5 +1,7 @@
 # handlers.py
 
+import time
+
 from FunPayAPI.updater.events import NewMessageEvent
 from rental_manager import RentalManager
 from storage import (
@@ -14,10 +16,13 @@ from tg_notify import send_admin_notification
 
 
 class AutoReplyBot:
+    ADMIN_REQUEST_COOLDOWN = 5 * 60  # 5 минут
+
     def __init__(self, acc):
         self.acc = acc
         self.rm = RentalManager(acc)
         self.welcomed_chats = set()
+        self.admin_request_last_ts = {}  # chat_id -> timestamp
 
     def handle_new_message(self, event: NewMessageEvent):
         msg = event.message
@@ -81,6 +86,26 @@ class AutoReplyBot:
             return
 
         if cmd == "/admin":
+            now = int(time.time())
+            last_ts = self.admin_request_last_ts.get(chat_id, 0)
+            cooldown_left = self.ADMIN_REQUEST_COOLDOWN - (now - last_ts)
+
+            if cooldown_left > 0:
+                minutes = cooldown_left // 60
+                seconds = cooldown_left % 60
+
+                if minutes > 0:
+                    wait_text = f"{minutes} мин. {seconds} сек."
+                else:
+                    wait_text = f"{seconds} сек."
+
+                self.acc.send_message(
+                    chat_id,
+                    f"⏳ Вы уже отправляли запрос продавцу недавно. "
+                    f"Повторно можно вызвать через {wait_text}"
+                )
+                return
+
             username = author or "Неизвестный клиент"
             chat_link = f"https://funpay.com/chat/?node={chat_id}"
 
@@ -92,6 +117,7 @@ class AutoReplyBot:
             ok = send_admin_notification(notify_text)
 
             if ok:
+                self.admin_request_last_ts[chat_id] = now
                 self.acc.send_message(
                     chat_id,
                     "✅ Продавцу отправлено уведомление. Пожалуйста, ожидайте ответа."
