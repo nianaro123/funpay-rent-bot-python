@@ -64,16 +64,16 @@ class RentalManager:
         buyer_username: str | None,
         chat_id: int | str,
         hours: int,
-    ) -> bool:
+    ):
         existing = get_rental_by_order_id(order_id)
         if existing:
             LOGGER.info("Заказ %s уже обработан", order_id)
-            return False
+            return None
 
         good = get_good_by_marker(good_marker)
         if not good:
             self.acc.send_message(chat_id, f"❌ В базе не найден товар для маркера {good_marker}")
-            return False
+            return None
 
         start_ts = int(time.time())
         paid_end_ts = start_ts + hours * 3600
@@ -103,7 +103,7 @@ class RentalManager:
                 chat_id,
                 "❌ Этот аккаунт уже занят или только что был выдан другому покупателю."
             )
-            return False
+            return None
 
         steam_guard_code = generate_steam_guard_code(good["shared_secret"])
 
@@ -145,7 +145,7 @@ class RentalManager:
             "Выдан аккаунт good_id=%s, marker=%s, order_id=%s",
             good["id"], good_marker, order_id
         )
-        return True
+        return good
 
     def extend_rental_by_order_id(self, order_id: str, hours: int, source: str = "same_marker_rebuy") -> bool:
         rental = get_rental_by_order_id(order_id)
@@ -294,6 +294,7 @@ class RentalManager:
                         f"⛔ Аренда закрыта автоматически без подтверждения\n"
                         f"Клиент: {buyer_name}\n"
                         f"Заказ: #{order_id}\n"
+                        f"Логин аккаунта: {rental['login']}\n"
                         f"Статус: аккаунт возвращён в пул, лот переведён в 'Свободен!'\n"
                         f"Чат: {chat_link}"
                     )
