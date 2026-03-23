@@ -5,7 +5,7 @@ import re
 
 from storage import (
     get_rental_by_order_id,
-    get_active_rental_by_buyer_and_lot,
+    get_active_rental_by_buyer_and_marker,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -50,7 +50,6 @@ def handle_paid_order_message(acc, rm, chat_id: int | str, text: str):
     buyer_id = None
     buyer_username = None
 
-    # ищем последнего не-системного собеседника
     for m in reversed(msg):
         if m.author_id not in (0, acc.id):
             buyer_id = m.author_id
@@ -61,39 +60,25 @@ def handle_paid_order_message(acc, rm, chat_id: int | str, text: str):
         acc.send_message(chat_id, "❌ Не удалось определить покупателя заказа.")
         return
 
-    lot_match = re.search(r"offer\?id=(\d+)", text)
-    lot_id = None
-    if lot_match:
-        lot_id = int(lot_match.group(1))
-
-    # fallback: если в системном тексте lot_id нет, пытаемся взять по маркеру после выдачи
-    # но для продления same lot логика требует именно lot_id.
-    if lot_id is None:
-        # попробуем определить lot_id по маркеру уже существующей аренды
-        same_marker_rental = None
-        # специально ничего не делаем здесь — ниже новая выдача по marker и так сработает
-        pass
-
-    # 1) если это повторная покупка того же лота этим же buyer -> продление
-    if lot_id is not None:
-        active_same_lot_rental = get_active_rental_by_buyer_and_lot(buyer_id, lot_id)
-        if active_same_lot_rental:
-            ok = rm.extend_rental_by_order_id(
-                active_same_lot_rental["order_id"],
-                hours,
-                source="same_lot_rebuy",
+    # если этот buyer уже арендует товар с тем же marker -> это продление
+    active_same_marker_rental = get_active_rental_by_buyer_and_marker(buyer_id, marker)
+    if active_same_marker_rental:
+        ok = rm.extend_rental_by_order_id(
+            active_same_marker_rental["order_id"],
+            hours,
+            source="same_marker_rebuy",
+        )
+        if ok:
+            acc.send_message(
+                chat_id,
+                f"✅ Заказ #{order_id}: аренда продлена на {hours} ч.\n"
+                "⏱ Обновлённое время можно посмотреть командой /time"
             )
-            if ok:
-                acc.send_message(
-                    chat_id,
-                    f"✅ Заказ #{order_id}: аренда продлена на {hours} ч.\n"
-                    "⏱ Обновлённое время можно посмотреть командой /time"
-                )
-            else:
-                acc.send_message(chat_id, "❌ Не удалось продлить текущую аренду.")
-            return
+        else:
+            acc.send_message(chat_id, "❌ Не удалось продлить текущую аренду.")
+        return
 
-    # 2) обычная новая выдача
+    # обычная новая выдача
     issued = rm.issue_specific_good(
         order_id=order_id,
         good_marker=marker,
