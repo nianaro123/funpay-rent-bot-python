@@ -52,6 +52,10 @@ class AutoReplyBot:
                     handle_paid_order_message(self.acc, self.rm, chat_id, text)
                     return
 
+                if "подтвердил успешное выполнение" in low and "заказ" in low:
+                    self.rm.handle_order_confirmed_notice(chat_id, text)
+                    return
+
                 if "написал отзыв" in low and "заказ" in low:
                     self.rm.handle_review_notice(chat_id, text)
                     return

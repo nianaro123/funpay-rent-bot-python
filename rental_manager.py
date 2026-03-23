@@ -22,6 +22,7 @@ from storage import (
     set_bonus_applied,
     add_extension,
 )
+from tg_notify import send_admin_notification
 
 LOGGER = logging.getLogger(__name__)
 
@@ -146,7 +147,7 @@ class RentalManager:
         )
         return True
 
-    def extend_rental_by_order_id(self, order_id: str, hours: int, source: str = "same_lot_rebuy") -> bool:
+    def extend_rental_by_order_id(self, order_id: str, hours: int, source: str = "same_marker_rebuy") -> bool:
         rental = get_rental_by_order_id(order_id)
         if not rental or rental["closed"]:
             return False
@@ -208,6 +209,21 @@ class RentalManager:
         except Exception as e:
             LOGGER.exception("Не удалось отправить сообщение после возврата order_id=%s: %s", order_id, e)
 
+    def handle_order_confirmed_notice(self, chat_id: int | str, text: str) -> None:
+        match_order = re.search(r"#([A-Z0-9]+)", text)
+        match_buyer = re.search(r"Покупатель\s+(.+?)\s+подтвердил успешное выполнение", text)
+
+        order_id = match_order.group(1) if match_order else "UNKNOWN"
+        buyer_name = match_buyer.group(1) if match_buyer else "Неизвестный клиент"
+        chat_link = f"https://funpay.com/chat/?node={chat_id}"
+
+        send_admin_notification(
+            f"✅ Аренда подтверждена\n"
+            f"Клиент: {buyer_name}\n"
+            f"Заказ: #{order_id}\n"
+            f"Чат: {chat_link}"
+        )
+
     def apply_review_bonus(self, buyer_id: int, chat_id: int | str) -> bool:
         rental = get_active_rental_by_buyer(buyer_id)
         if not rental:
@@ -232,6 +248,7 @@ class RentalManager:
         for rental in rentals:
             order_id = rental["order_id"]
             chat_id = rental["chat_id"]
+            buyer_name = rental["buyer_username"] or rental["buyer_id"] or "Неизвестный клиент"
 
             time_left = rental["paid_end_ts"] - now
             if rental["warned_10m"] == 0 and 0 < time_left <= self.WARNING_SECONDS:
@@ -271,5 +288,14 @@ class RentalManager:
 
                     close_rental(order_id)
                     LOGGER.info("Аренда закрыта order_id=%s", order_id)
+
+                    chat_link = f"https://funpay.com/chat/?node={chat_id}"
+                    send_admin_notification(
+                        f"⛔ Аренда закрыта автоматически без подтверждения\n"
+                        f"Клиент: {buyer_name}\n"
+                        f"Заказ: #{order_id}\n"
+                        f"Статус: аккаунт возвращён в пул, лот переведён в 'Свободен!'\n"
+                        f"Чат: {chat_link}"
+                    )
                 except Exception as e:
                     LOGGER.exception("Ошибка закрытия аренды order_id=%s: %s", order_id, e)

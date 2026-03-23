@@ -7,6 +7,7 @@ from storage import (
     get_rental_by_order_id,
     get_active_rental_by_buyer_and_marker,
 )
+from tg_notify import send_admin_notification
 
 LOGGER = logging.getLogger(__name__)
 
@@ -60,7 +61,9 @@ def handle_paid_order_message(acc, rm, chat_id: int | str, text: str):
         acc.send_message(chat_id, "❌ Не удалось определить покупателя заказа.")
         return
 
-    # если этот buyer уже арендует товар с тем же marker -> это продление
+    chat_link = f"https://funpay.com/chat/?node={chat_id}"
+
+    # Повторная покупка того же маркера = продление
     active_same_marker_rental = get_active_rental_by_buyer_and_marker(buyer_id, marker)
     if active_same_marker_rental:
         ok = rm.extend_rental_by_order_id(
@@ -74,11 +77,20 @@ def handle_paid_order_message(acc, rm, chat_id: int | str, text: str):
                 f"✅ Заказ #{order_id}: аренда продлена на {hours} ч.\n"
                 "⏱ Обновлённое время можно посмотреть командой /time"
             )
+
+            send_admin_notification(
+                f"🔁 Продление аренды\n"
+                f"Клиент: {buyer_username or buyer_id}\n"
+                f"Новый заказ: #{order_id}\n"
+                f"Продлено на: {hours} ч.\n"
+                f"Маркер: {marker}\n"
+                f"Чат: {chat_link}"
+            )
         else:
             acc.send_message(chat_id, "❌ Не удалось продлить текущую аренду.")
         return
 
-    # обычная новая выдача
+    # Новая выдача
     issued = rm.issue_specific_good(
         order_id=order_id,
         good_marker=marker,
@@ -90,3 +102,13 @@ def handle_paid_order_message(acc, rm, chat_id: int | str, text: str):
 
     if not issued:
         acc.send_message(chat_id, "❌ Не удалось выдать аккаунт.")
+        return
+
+    send_admin_notification(
+        f"🟢 Новая аренда\n"
+        f"Клиент: {buyer_username or buyer_id}\n"
+        f"Заказ: #{order_id}\n"
+        f"Время: {hours} ч.\n"
+        f"Маркер: {marker}\n"
+        f"Чат: {chat_link}"
+    )

@@ -11,6 +11,7 @@ def send_admin_notification(text: str) -> bool:
     payload = {
         "chat_id": TELEGRAM_ADMIN_USER_ID,
         "text": text,
+        "disable_web_page_preview": True,
     }
 
     try:
