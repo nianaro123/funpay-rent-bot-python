@@ -294,6 +294,7 @@ class RentalManager:
                         f"⛔ Аренда закрыта автоматически без подтверждения\n"
                         f"Клиент: {buyer_name}\n"
                         f"Заказ: #{order_id}\n"
+                        f"good_id: {rental['good_id']}\n"
                         f"Логин аккаунта: {rental['login']}\n"
                         f"Статус: аккаунт возвращён в пул, лот переведён в 'Свободен!'\n"
                         f"Чат: {chat_link}"

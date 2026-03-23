@@ -83,6 +83,7 @@ def handle_paid_order_message(acc, rm, chat_id: int | str, text: str):
                 f"Новый заказ: #{order_id}\n"
                 f"Продлено на: {hours} ч.\n"
                 f"Маркер: {marker}\n"
+                f"good_id: {active_same_marker_rental['good_id']}\n"
                 f"Логин аккаунта: {active_same_marker_rental['login']}\n"
                 f"Чат: {chat_link}"
             )
@@ -109,6 +110,7 @@ def handle_paid_order_message(acc, rm, chat_id: int | str, text: str):
         f"Заказ: #{order_id}\n"
         f"Время: {hours} ч.\n"
         f"Маркер: {marker}\n"
+        f"good_id: {issued_good['id']}\n"
         f"Логин аккаунта: {issued_good['login']}\n"
         f"Чат: {chat_link}"
     )
