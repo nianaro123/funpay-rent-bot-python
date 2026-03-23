@@ -1,94 +1,107 @@
 # order_handler.py
 
-import re
 import logging
+import re
 
-from FunPayAPI import Account
-from rental_manager import RentalManager
-from order_utils import (
-    get_order_html,
-    extract_hours_from_order_html,
-    extract_short_description_from_order_html,
-    extract_good_marker,
+from storage import (
+    get_rental_by_order_id,
+    get_active_rental_by_buyer_and_lot,
 )
 
 LOGGER = logging.getLogger(__name__)
 
 
 def extract_order_id(text: str) -> str | None:
-    match = re.search(r"#([A-Z0-9]{8})", text)
-    if match:
-        return match.group(1)
-    return None
+    match = re.search(r"#([A-Z0-9]+)", text)
+    return match.group(1) if match else None
 
 
-def is_extension_order(order) -> bool:
-    text = " ".join([
-        order.short_description or "",
-        order.full_description or "",
-    ]).lower()
-
-    return "лот для продления" in text or "продление" in text
+def extract_hours(text: str) -> int | None:
+    match = re.search(r"(\d+)\s*шт", text.lower())
+    return int(match.group(1)) if match else None
 
 
-def handle_paid_order_message(
-    acc: Account,
-    rental_manager: RentalManager,
-    chat_id: int | str,
-    message_text: str
-):
-    order_id = extract_order_id(message_text)
+def extract_marker(text: str) -> str | None:
+    match = re.search(r"(#\d+)", text)
+    return match.group(1) if match else None
+
+
+def handle_paid_order_message(acc, rm, chat_id: int | str, text: str):
+    order_id = extract_order_id(text)
     if not order_id:
-        LOGGER.warning("Не удалось извлечь order_id из сообщения: %s", message_text)
+        acc.send_message(chat_id, "❌ Не удалось определить номер заказа.")
         return
 
-    try:
-        order = acc.get_order(order_id)
-    except Exception as e:
-        LOGGER.exception("Ошибка получения заказа %s: %s", order_id, e)
-        acc.send_message(chat_id, "❌ Не удалось загрузить данные заказа.")
+    if get_rental_by_order_id(order_id):
+        LOGGER.info("Заказ %s уже обработан", order_id)
         return
 
-    if is_extension_order(order):
-        ok = rental_manager.extend_active_rental_for_buyer(
-            buyer_id=order.buyer_id,
-            hours=1,
-            source="paid_extension"
-        )
-
-        if ok:
-            acc.send_message(chat_id, "✅ Аренда продлена на 1 час.")
-        else:
-            acc.send_message(chat_id, "❌ Не удалось продлить аренду. У вас нет активной аренды.")
-        return
-
-    try:
-        html = get_order_html(acc, order_id)
-    except Exception as e:
-        LOGGER.exception("Ошибка загрузки HTML заказа %s: %s", order_id, e)
-        acc.send_message(chat_id, "❌ Не удалось открыть страницу заказа.")
-        return
-
-    hours = extract_hours_from_order_html(html)
-    if hours is None:
+    hours = extract_hours(text)
+    if not hours:
         acc.send_message(chat_id, "❌ Не удалось определить количество часов по заказу.")
         return
 
-    short_description = extract_short_description_from_order_html(html)
-    good_marker = extract_good_marker(short_description)
-
-    if not good_marker:
-        acc.send_message(chat_id, "❌ Не удалось определить номер товара из краткого описания.")
+    marker = extract_marker(text)
+    if not marker:
+        acc.send_message(chat_id, "❌ Не удалось определить маркер товара (#1, #2 и т.д.).")
         return
 
-    ok = rental_manager.issue_specific_good(
+    msg = acc.get_chat_history(chat_id, interlocutor_username=None, from_id=0)
+    buyer_id = None
+    buyer_username = None
+
+    # ищем последнего не-системного собеседника
+    for m in reversed(msg):
+        if m.author_id not in (0, acc.id):
+            buyer_id = m.author_id
+            buyer_username = m.author
+            break
+
+    if buyer_id is None:
+        acc.send_message(chat_id, "❌ Не удалось определить покупателя заказа.")
+        return
+
+    lot_match = re.search(r"offer\?id=(\d+)", text)
+    lot_id = None
+    if lot_match:
+        lot_id = int(lot_match.group(1))
+
+    # fallback: если в системном тексте lot_id нет, пытаемся взять по маркеру после выдачи
+    # но для продления same lot логика требует именно lot_id.
+    if lot_id is None:
+        # попробуем определить lot_id по маркеру уже существующей аренды
+        same_marker_rental = None
+        # специально ничего не делаем здесь — ниже новая выдача по marker и так сработает
+        pass
+
+    # 1) если это повторная покупка того же лота этим же buyer -> продление
+    if lot_id is not None:
+        active_same_lot_rental = get_active_rental_by_buyer_and_lot(buyer_id, lot_id)
+        if active_same_lot_rental:
+            ok = rm.extend_rental_by_order_id(
+                active_same_lot_rental["order_id"],
+                hours,
+                source="same_lot_rebuy",
+            )
+            if ok:
+                acc.send_message(
+                    chat_id,
+                    f"✅ Заказ #{order_id}: аренда продлена на {hours} ч.\n"
+                    "⏱ Обновлённое время можно посмотреть командой /time"
+                )
+            else:
+                acc.send_message(chat_id, "❌ Не удалось продлить текущую аренду.")
+            return
+
+    # 2) обычная новая выдача
+    issued = rm.issue_specific_good(
         order_id=order_id,
-        good_marker=good_marker,
-        buyer_id=order.buyer_id,
-        buyer_username=order.buyer_username,
+        good_marker=marker,
+        buyer_id=buyer_id,
+        buyer_username=buyer_username,
         chat_id=chat_id,
-        hours=hours
+        hours=hours,
     )
 
-    if not ok:
+    if not issued:
         acc.send_message(chat_id, "❌ Не удалось выдать аккаунт.")

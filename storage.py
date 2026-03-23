@@ -275,6 +275,22 @@ def get_active_rental_by_buyer(buyer_id: int):
     return row
 
 
+def get_active_rental_by_buyer_and_lot(buyer_id: int, lot_id: int):
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT r.*, g.login, g.password, g.note, g.title, g.shared_secret, g.lot_id AS good_lot_id
+        FROM rentals r
+        JOIN goods g ON g.id = r.good_id
+        WHERE r.closed = 0
+          AND r.buyer_id = ?
+          AND r.lot_id = ?
+        ORDER BY r.id DESC
+        LIMIT 1
+    """, (buyer_id, lot_id)).fetchone()
+    conn.close()
+    return row
+
+
 def list_active_rentals_by_buyer(buyer_id: int):
     conn = get_connection()
     rows = conn.execute("""

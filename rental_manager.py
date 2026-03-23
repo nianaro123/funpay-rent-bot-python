@@ -6,8 +6,8 @@ import secrets
 import sqlite3
 import time
 
-from steam_guard import generate_steam_guard_code
 from lot_manager import LotManager
+from steam_guard import generate_steam_guard_code
 from storage import (
     get_good_by_marker,
     count_free_goods,
@@ -146,6 +146,17 @@ class RentalManager:
         )
         return True
 
+    def extend_rental_by_order_id(self, order_id: str, hours: int, source: str = "same_lot_rebuy") -> bool:
+        rental = get_rental_by_order_id(order_id)
+        if not rental or rental["closed"]:
+            return False
+
+        add_seconds = hours * 3600
+        extend_rental(order_id, add_seconds)
+        add_extension(rental["id"], source, hours, int(time.time()))
+        LOGGER.info("Продлена аренда order_id=%s на %s ч. source=%s", order_id, hours, source)
+        return True
+
     def handle_review_notice(self, chat_id: int | str, text: str) -> None:
         self.acc.send_message(
             chat_id,
@@ -192,30 +203,10 @@ class RentalManager:
             self.acc.send_message(
                 chat_id,
                 f"ℹ️ Заказ #{order_id}: возврат средств зафиксирован. "
-                "Аренда закрыта."
+                "Аренда закрыта, аккаунт снова доступен для аренды."
             )
         except Exception as e:
             LOGGER.exception("Не удалось отправить сообщение после возврата order_id=%s: %s", order_id, e)
-
-    def extend_active_rental_for_buyer(
-        self,
-        buyer_id: int,
-        hours: int,
-        source: str = "manual"
-    ) -> bool:
-        rental = get_active_rental_by_buyer(buyer_id)
-        if not rental:
-            return False
-
-        add_seconds = hours * 3600
-        extend_rental(rental["order_id"], add_seconds)
-        add_extension(rental["id"], source, hours, int(time.time()))
-
-        LOGGER.info(
-            "Продлена аренда order_id=%s на %s ч. source=%s",
-            rental["order_id"], hours, source,
-        )
-        return True
 
     def apply_review_bonus(self, buyer_id: int, chat_id: int | str) -> bool:
         rental = get_active_rental_by_buyer(buyer_id)
