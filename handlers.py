@@ -9,6 +9,7 @@ from storage import (
 )
 from config import WELCOME_TEXT, HELP_TEXT
 from order_handler import handle_paid_order_message
+from steam_guard import generate_steam_guard_code
 
 
 class AutoReplyBot:
@@ -105,12 +106,13 @@ class AutoReplyBot:
                 self.acc.send_message(chat_id, "У вас нет активных аренд")
                 return
 
-            lines = ["🔑 Ваши коды аренд:"]
+            lines = ["🔑 Ваши Steam Guard коды:"]
             for i, rental in enumerate(rentals, start=1):
-                lines.append(
-                    f"{i}. {rental['login']} — код: {rental['code']}"
-                )
-
+                code = generate_steam_guard_code(rental["shared_secret"])
+                if code:
+                    lines.append(f"{i}. {rental['login']} — код: {code}")
+                else:
+                    lines.append(f"{i}. {rental['login']} — shared_secret не задан")
             self.acc.send_message(chat_id, "\n".join(lines))
             return
 
@@ -122,9 +124,7 @@ class AutoReplyBot:
             lines = ["⏱ Ваши активные аренды:"]
             for i, rental in enumerate(rentals, start=1):
                 remaining = self.rm.get_remaining_time(rental)
-                lines.append(
-                    f"{i}. {rental['title']} — осталось: {remaining}"
-                )
+                lines.append(f"{i}. {rental['title']} — осталось: {remaining}")
             self.acc.send_message(chat_id, "\n".join(lines))
             return
 

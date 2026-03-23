@@ -11,6 +11,13 @@ def get_connection():
     return conn
 
 
+def ensure_goods_columns(conn):
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(goods)").fetchall()}
+
+    if "shared_secret" not in columns:
+        conn.execute("ALTER TABLE goods ADD COLUMN shared_secret TEXT DEFAULT ''")
+
+
 def init_db():
     conn = get_connection()
 
@@ -25,6 +32,8 @@ def init_db():
         is_active INTEGER NOT NULL DEFAULT 1
     )
     """)
+
+    ensure_goods_columns(conn)
 
     conn.execute("""
     CREATE TABLE IF NOT EXISTS rentals (
@@ -75,14 +84,121 @@ def init_db():
     conn.close()
 
 
-def add_good(lot_id: int, title: str, login: str, password: str, note: str = ""):
+def add_good(
+    lot_id: int,
+    title: str,
+    login: str,
+    password: str,
+    note: str = "",
+    shared_secret: str = "",
+):
     conn = get_connection()
-    conn.execute("""
-        INSERT INTO goods(lot_id, title, login, password, note)
-        VALUES (?, ?, ?, ?, ?)
-    """, (lot_id, title, login, password, note))
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO goods(lot_id, title, login, password, note, shared_secret)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (lot_id, title, login, password, note, shared_secret))
     conn.commit()
+    good_id = cur.lastrowid
     conn.close()
+    return good_id
+
+
+def list_goods():
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT g.*,
+               EXISTS(
+                   SELECT 1
+                   FROM rentals r
+                   WHERE r.good_id = g.id AND r.closed = 0
+               ) AS is_busy
+        FROM goods g
+        ORDER BY g.id ASC
+    """).fetchall()
+    conn.close()
+    return rows
+
+
+def get_good_by_id(good_id: int):
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT *
+        FROM goods
+        WHERE id = ?
+        LIMIT 1
+    """, (good_id,)).fetchone()
+    conn.close()
+    return row
+
+
+def update_good(
+    good_id: int,
+    lot_id: int | None = None,
+    title: str | None = None,
+    login: str | None = None,
+    password: str | None = None,
+    note: str | None = None,
+    shared_secret: str | None = None,
+) -> bool:
+    current = get_good_by_id(good_id)
+    if not current:
+        return False
+
+    new_lot_id = current["lot_id"] if lot_id is None else lot_id
+    new_title = current["title"] if title is None else title
+    new_login = current["login"] if login is None else login
+    new_password = current["password"] if password is None else password
+    new_note = current["note"] if note is None else note
+    new_shared_secret = current["shared_secret"] if shared_secret is None else shared_secret
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE goods
+        SET lot_id = ?, title = ?, login = ?, password = ?, note = ?, shared_secret = ?
+        WHERE id = ?
+    """, (new_lot_id, new_title, new_login, new_password, new_note, new_shared_secret, good_id))
+    conn.commit()
+    updated = cur.rowcount > 0
+    conn.close()
+    return updated
+
+
+def delete_good(good_id: int) -> bool:
+    conn = get_connection()
+    cur = conn.cursor()
+
+    busy = cur.execute("""
+        SELECT 1
+        FROM rentals
+        WHERE good_id = ? AND closed = 0
+        LIMIT 1
+    """, (good_id,)).fetchone()
+
+    if busy:
+        conn.close()
+        return False
+
+    cur.execute("DELETE FROM goods WHERE id = ?", (good_id,))
+    conn.commit()
+    deleted = cur.rowcount > 0
+    conn.close()
+    return deleted
+
+
+def set_good_active(good_id: int, is_active: int) -> bool:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE goods
+        SET is_active = ?
+        WHERE id = ?
+    """, (is_active, good_id))
+    conn.commit()
+    updated = cur.rowcount > 0
+    conn.close()
+    return updated
 
 
 def get_good_by_lot_id(lot_id: int):
@@ -121,18 +237,6 @@ def get_good_by_marker(marker: str):
     return row
 
 
-def get_good_by_id(good_id: int):
-    conn = get_connection()
-    row = conn.execute("""
-        SELECT *
-        FROM goods
-        WHERE id = ?
-        LIMIT 1
-    """, (good_id,)).fetchone()
-    conn.close()
-    return row
-
-
 def count_free_goods():
     conn = get_connection()
     row = conn.execute("""
@@ -152,7 +256,7 @@ def count_free_goods():
 def get_active_rental_by_buyer(buyer_id: int):
     conn = get_connection()
     row = conn.execute("""
-        SELECT r.*, g.login, g.password, g.note, g.title, g.lot_id AS good_lot_id
+        SELECT r.*, g.login, g.password, g.note, g.title, g.shared_secret, g.lot_id AS good_lot_id
         FROM rentals r
         JOIN goods g ON g.id = r.good_id
         WHERE r.closed = 0
@@ -167,7 +271,7 @@ def get_active_rental_by_buyer(buyer_id: int):
 def list_active_rentals_by_buyer(buyer_id: int):
     conn = get_connection()
     rows = conn.execute("""
-        SELECT r.*, g.login, g.password, g.note, g.title, g.lot_id AS good_lot_id
+        SELECT r.*, g.login, g.password, g.note, g.title, g.shared_secret, g.lot_id AS good_lot_id
         FROM rentals r
         JOIN goods g ON g.id = r.good_id
         WHERE r.closed = 0
@@ -213,7 +317,7 @@ def get_rental_by_order_id(order_id: str):
 def list_active_rentals():
     conn = get_connection()
     rows = conn.execute("""
-        SELECT r.*, g.login, g.password, g.note, g.title, g.lot_id AS good_lot_id
+        SELECT r.*, g.login, g.password, g.note, g.title, g.shared_secret, g.lot_id AS good_lot_id
         FROM rentals r
         JOIN goods g ON g.id = r.good_id
         WHERE r.closed = 0
