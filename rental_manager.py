@@ -6,6 +6,7 @@ import secrets
 import sqlite3
 import time
 
+from steam_guard import generate_steam_guard_code
 from lot_manager import LotManager
 from storage import (
     get_good_by_marker,
@@ -103,21 +104,23 @@ class RentalManager:
             )
             return False
 
+        steam_guard_code = generate_steam_guard_code(good["shared_secret"])
+
         lines = [
             "✅ Данные для входа:",
             f"Логин: {good['login']}",
             f"Пароль: {good['password']}",
         ]
 
-        if good["note"]:
-            lines.append(f"Примечание: {good['note']}")
+        if steam_guard_code:
+            lines.append(f"Steam Guard код: {steam_guard_code}")
+        else:
+            lines.append("Steam Guard код: не задан")
 
         lines.extend([
             "",
-            f"🧾 Ваш уникальный код: {code}",
             f"⏱ Время аренды: {hours} ч.",
             "⚠️ За 10 минут до окончания аренды я отправлю предупреждение.",
-            "⌛ После завершения аренды действует буфер 15 минут.",
         ])
 
         self.acc.send_message(chat_id, "\n".join(lines))
