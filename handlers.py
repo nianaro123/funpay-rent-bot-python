@@ -10,6 +10,7 @@ from storage import (
 from config import WELCOME_TEXT, HELP_TEXT
 from order_handler import handle_paid_order_message
 from steam_guard import generate_steam_guard_code
+from tg_notify import send_admin_notification
 
 
 class AutoReplyBot:
@@ -30,6 +31,7 @@ class AutoReplyBot:
 
         chat_id = msg.chat_id
         author_id = getattr(msg, "author_id", None)
+        author = getattr(msg, "author", None)
         msg_id = str(getattr(msg, "id", ""))
 
         last_id = get_last_message_id(str(chat_id))
@@ -55,7 +57,7 @@ class AutoReplyBot:
                 return
 
             if text.startswith("/"):
-                self.handle_command(chat_id, text, author_id)
+                self.handle_command(chat_id, text, author_id, author)
                 return
 
             if chat_id not in self.welcomed_chats:
@@ -66,7 +68,7 @@ class AutoReplyBot:
             if msg_id:
                 set_last_message_id(str(chat_id), msg_id)
 
-    def handle_command(self, chat_id, text, author_id=None):
+    def handle_command(self, chat_id, text, author_id=None, author=None):
         cmd = text.split()[0].lower()
 
         if cmd == "/help":
@@ -76,6 +78,29 @@ class AutoReplyBot:
         if cmd == "/free":
             free = self.rm.get_free_accounts()
             self.acc.send_message(chat_id, f"Свободных аккаунтов: {free}")
+            return
+
+        if cmd == "/admin":
+            username = author or "Неизвестный клиент"
+            chat_link = f"https://funpay.com/chat/?node={chat_id}"
+
+            notify_text = (
+                f"Клиент {username} отправил запрос на диалог с вами.\n\n"
+                f"Ссылка на чат:\n{chat_link}"
+            )
+
+            ok = send_admin_notification(notify_text)
+
+            if ok:
+                self.acc.send_message(
+                    chat_id,
+                    "✅ Продавцу отправлено уведомление. Пожалуйста, ожидайте ответа."
+                )
+            else:
+                self.acc.send_message(
+                    chat_id,
+                    "⚠️ Не удалось отправить уведомление продавцу. Попробуйте позже."
+                )
             return
 
         if author_id is None:
@@ -96,8 +121,6 @@ class AutoReplyBot:
                     f"Логин: {rental['login']}\n"
                     f"Пароль: {rental['password']}"
                 )
-                if rental["note"]:
-                    lines.append(f"Примечание: {rental['note']}")
             self.acc.send_message(chat_id, "\n".join(lines))
             return
 
