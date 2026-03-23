@@ -8,6 +8,8 @@ from storage import (
     get_last_message_id,
     list_active_rentals_by_buyer,
     set_last_message_id,
+    get_admin_request_ts,
+    set_admin_request_ts,
 )
 from config import WELCOME_TEXT, HELP_TEXT
 from order_handler import handle_paid_order_message
@@ -22,7 +24,6 @@ class AutoReplyBot:
         self.acc = acc
         self.rm = RentalManager(acc)
         self.welcomed_chats = set()
-        self.admin_request_last_ts = {}  # chat_id -> timestamp
 
     def handle_new_message(self, event: NewMessageEvent):
         msg = event.message
@@ -87,7 +88,7 @@ class AutoReplyBot:
 
         if cmd == "/admin":
             now = int(time.time())
-            last_ts = self.admin_request_last_ts.get(chat_id, 0)
+            last_ts = get_admin_request_ts(str(chat_id)) or 0
             cooldown_left = self.ADMIN_REQUEST_COOLDOWN - (now - last_ts)
 
             if cooldown_left > 0:
@@ -117,7 +118,7 @@ class AutoReplyBot:
             ok = send_admin_notification(notify_text)
 
             if ok:
-                self.admin_request_last_ts[chat_id] = now
+                set_admin_request_ts(str(chat_id), now)
                 self.acc.send_message(
                     chat_id,
                     "✅ Продавцу отправлено уведомление. Пожалуйста, ожидайте ответа."

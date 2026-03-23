@@ -75,6 +75,13 @@ def init_db():
     """)
 
     conn.execute("""
+    CREATE TABLE IF NOT EXISTS admin_requests (
+        chat_id TEXT PRIMARY KEY,
+        last_request_ts INTEGER NOT NULL
+    )
+    """)
+
+    conn.execute("""
     CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_active_good
     ON rentals(good_id)
     WHERE closed = 0
@@ -414,5 +421,27 @@ def set_last_message_id(chat_id: str, message_id: str):
         VALUES (?, ?)
         ON CONFLICT(chat_id) DO UPDATE SET last_message_id=excluded.last_message_id
     """, (str(chat_id), str(message_id)))
+    conn.commit()
+    conn.close()
+
+
+def get_admin_request_ts(chat_id: str) -> int | None:
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT last_request_ts
+        FROM admin_requests
+        WHERE chat_id = ?
+    """, (str(chat_id),)).fetchone()
+    conn.close()
+    return int(row["last_request_ts"]) if row else None
+
+
+def set_admin_request_ts(chat_id: str, ts: int):
+    conn = get_connection()
+    conn.execute("""
+        INSERT INTO admin_requests (chat_id, last_request_ts)
+        VALUES (?, ?)
+        ON CONFLICT(chat_id) DO UPDATE SET last_request_ts=excluded.last_request_ts
+    """, (str(chat_id), int(ts)))
     conn.commit()
     conn.close()
