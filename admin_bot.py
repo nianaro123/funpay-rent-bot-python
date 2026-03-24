@@ -2,6 +2,8 @@
 
 import logging
 import time
+
+from FunPayAPI import Account
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -12,7 +14,12 @@ from telegram.ext import (
     filters,
 )
 
-from config import TELEGRAM_ADMIN_BOT_TOKEN, TELEGRAM_ADMIN_USER_ID
+from config import (
+    TELEGRAM_ADMIN_BOT_TOKEN,
+    TELEGRAM_ADMIN_USER_ID,
+    GOLDEN_KEY,
+    USER_AGENT,
+)
 from storage import (
     init_db,
     add_good,
@@ -25,6 +32,9 @@ from storage import (
     get_good_by_id,
     get_confirmed_income_total,
     get_confirmed_income_by_good,
+    get_rental_by_order_id,
+    extend_rental,
+    add_extension,
 )
 
 logging.basicConfig(
@@ -32,13 +42,35 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
+LOGGER = logging.getLogger(__name__)
+
 ADD_LOT_ID, ADD_TITLE, ADD_LOGIN, ADD_PASSWORD, ADD_NOTE, ADD_SHARED_SECRET = range(6)
 EDIT_GOOD_ID, EDIT_LOT_ID, EDIT_TITLE, EDIT_LOGIN, EDIT_PASSWORD, EDIT_NOTE, EDIT_SHARED_SECRET = range(6, 13)
+
+FUNPAY_ACC = None
+
+
+def init_funpay_account():
+    global FUNPAY_ACC
+    try:
+        FUNPAY_ACC = Account(GOLDEN_KEY, user_agent=USER_AGENT).get()
+        LOGGER.info("FunPay account initialized in admin_bot.py")
+    except Exception as e:
+        FUNPAY_ACC = None
+        LOGGER.exception("Failed to init FunPay account in admin_bot.py: %s", e)
 
 
 def is_admin(update: Update) -> bool:
     user = update.effective_user
     return bool(user and user.id == TELEGRAM_ADMIN_USER_ID)
+
+
+async def admin_only(update: Update) -> bool:
+    if not is_admin(update):
+        if update.message:
+            await update.message.reply_text("Нет доступа.")
+        return False
+    return True
 
 
 def format_remaining_time(rental) -> str:
@@ -65,14 +97,6 @@ def format_remaining_time(rental) -> str:
     return "ожидает закрытия"
 
 
-async def admin_only(update: Update) -> bool:
-    if not is_admin(update):
-        if update.message:
-            await update.message.reply_text("Нет доступа.")
-        return False
-    return True
-
-
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
         return
@@ -82,7 +106,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Команды:\n"
         "/goods — список товаров\n"
         "/free — число свободных товаров\n"
-        "/rentals — активные аренды\n"
+        "/rentals — активные аренды + оставшееся время\n"
+        "/extendrent ORDER_ID HOURS — вручную продлить аренду клиенту\n"
         "/addgood — пошаговое добавление товара\n"
         "/editgood — пошаговое редактирование товара\n"
         "/disablegood good_id\n"
@@ -148,6 +173,67 @@ async def rentals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     await update.message.reply_text("\n".join(lines))
+
+
+async def extendrent_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    if len(context.args) != 2:
+        await update.message.reply_text("Формат: /extendrent ORDER_ID HOURS\nПример: /extendrent DD6RLVKJ 2")
+        return
+
+    order_id = context.args[0].strip().upper()
+
+    try:
+        hours = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("HOURS должно быть числом.")
+        return
+
+    if hours <= 0:
+        await update.message.reply_text("Количество часов должно быть больше 0.")
+        return
+
+    rental = get_rental_by_order_id(order_id)
+    if not rental:
+        await update.message.reply_text(f"❌ Заказ #{order_id} не найден в rentals.")
+        return
+
+    if rental["closed"]:
+        await update.message.reply_text(f"❌ Заказ #{order_id} уже закрыт.")
+        return
+
+    try:
+        add_seconds = hours * 3600
+        extend_rental(order_id, add_seconds)
+        add_extension(rental["id"], "admin_manual", hours, int(time.time()))
+    except Exception as e:
+        LOGGER.exception("Failed to extend rental manually for order_id=%s: %s", order_id, e)
+        await update.message.reply_text(f"❌ Не удалось продлить заказ #{order_id}.")
+        return
+
+    updated_rental = get_rental_by_order_id(order_id)
+    remaining_text = format_remaining_time(updated_rental)
+
+    buyer_msg_sent = False
+    if FUNPAY_ACC is not None:
+        try:
+            FUNPAY_ACC.send_message(
+                updated_rental["chat_id"],
+                f"✅ Продавец вручную продлил вашу аренду по заказу #{order_id} на {hours} ч.\n"
+                f"⏱ Текущее оставшееся время: {remaining_text}"
+            )
+            buyer_msg_sent = True
+        except Exception as e:
+            LOGGER.exception("Failed to send buyer message for manual extension order_id=%s: %s", order_id, e)
+
+    text = (
+        f"✅ Заказ #{order_id} продлён на {hours} ч.\n"
+        f"Текущее время: {remaining_text}\n"
+        f"Сообщение клиенту: {'отправлено' if buyer_msg_sent else 'не отправлено'}"
+    )
+    await update.message.reply_text(text)
 
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -523,6 +609,7 @@ async def delgood_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     init_db()
+    init_funpay_account()
 
     app = Application.builder().token(TELEGRAM_ADMIN_BOT_TOKEN).build()
 
@@ -581,6 +668,7 @@ def main():
     app.add_handler(CommandHandler("goods", goods_cmd))
     app.add_handler(CommandHandler("free", free_cmd))
     app.add_handler(CommandHandler("rentals", rentals_cmd))
+    app.add_handler(CommandHandler("extendrent", extendrent_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(addgood_conv)
     app.add_handler(editgood_conv)
