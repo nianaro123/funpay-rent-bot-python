@@ -24,6 +24,7 @@ from storage import (
     add_extension,
 )
 from tg_notify import send_admin_notification
+from steam_session_guard import force_relogin_account
 
 LOGGER = logging.getLogger(__name__)
 
@@ -277,6 +278,22 @@ class RentalManager:
 
             if now >= rental["grace_end_ts"]:
                 try:
+                    kick_ok = False
+
+                    try:
+                        if rental["login"] and rental["password"] and rental["shared_secret"]:
+                            kick_ok = force_relogin_account(
+                                rental["login"],
+                                rental["password"],
+                                rental["shared_secret"],
+                            )
+                    except Exception as e:
+                        LOGGER.exception(
+                            "Ошибка антиабуза (relogin) для order_id=%s: %s",
+                            order_id,
+                            e,
+                        )
+
                     try:
                         lot_id = int(rental["good_lot_id"]) if rental["good_lot_id"] else 0
                         if lot_id:
@@ -300,6 +317,7 @@ class RentalManager:
                         f"good_id: {rental['good_id']}\n"
                         f"Маркер: {rental['marker']}\n"
                         f"Логин аккаунта: {rental['login']}\n"
+                        f"Антиабуз relogin: {'успешно' if kick_ok else 'не удалось'}\n"
                         f"Статус: аккаунт возвращён в пул, лот переведён в 'Свободен!'\n"
                         f"Чат: {chat_link}"
                     )
