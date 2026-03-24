@@ -6,6 +6,7 @@ import secrets
 import sqlite3
 import time
 
+from storage import mark_order_confirmed, mark_order_refunded
 from lot_manager import LotManager
 from steam_guard import generate_steam_guard_code
 from storage import (
@@ -195,6 +196,7 @@ class RentalManager:
 
         try:
             close_rental(order_id)
+            mark_order_refunded(order_id, int(time.time()))
             LOGGER.info("Аренда закрыта после возврата средств, order_id=%s", order_id)
         except Exception as e:
             LOGGER.exception("Не удалось закрыть аренду после возврата order_id=%s: %s", order_id, e)
@@ -216,6 +218,7 @@ class RentalManager:
         order_id = match_order.group(1) if match_order else "UNKNOWN"
         buyer_name = match_buyer.group(1) if match_buyer else "Неизвестный клиент"
         chat_link = f"https://funpay.com/chat/?node={chat_id}"
+        mark_order_confirmed(order_id, int(time.time()))
 
         send_admin_notification(
             f"✅ Аренда подтверждена\n"
@@ -295,6 +298,7 @@ class RentalManager:
                         f"Клиент: {buyer_name}\n"
                         f"Заказ: #{order_id}\n"
                         f"good_id: {rental['good_id']}\n"
+                        f"Маркер: {rental['marker']}\n"
                         f"Логин аккаунта: {rental['login']}\n"
                         f"Статус: аккаунт возвращён в пул, лот переведён в 'Свободен!'\n"
                         f"Чат: {chat_link}"

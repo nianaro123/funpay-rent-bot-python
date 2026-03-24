@@ -1,5 +1,6 @@
 # storage.py
 
+import re
 import sqlite3
 
 DB_PATH = "rent_bot.sqlite3"
@@ -11,11 +12,34 @@ def get_connection():
     return conn
 
 
+def extract_marker_from_title(title: str) -> str:
+    if not title:
+        return ""
+    match = re.search(r"(#\d+)", title)
+    return match.group(1) if match else ""
+
+
 def ensure_goods_columns(conn):
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(goods)").fetchall()}
 
     if "shared_secret" not in columns:
         conn.execute("ALTER TABLE goods ADD COLUMN shared_secret TEXT DEFAULT ''")
+
+    if "marker" not in columns:
+        conn.execute("ALTER TABLE goods ADD COLUMN marker TEXT DEFAULT ''")
+
+    # backfill marker for old rows
+    rows = conn.execute("SELECT id, title, marker FROM goods").fetchall()
+    for row in rows:
+        current_marker = row["marker"] or ""
+        if current_marker.strip():
+            continue
+        marker = extract_marker_from_title(row["title"] or "")
+        if marker:
+            conn.execute(
+                "UPDATE goods SET marker = ? WHERE id = ?",
+                (marker, row["id"])
+            )
 
 
 def init_db():
@@ -87,6 +111,25 @@ def init_db():
     WHERE closed = 0
     """)
 
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS order_events (
+        order_id TEXT PRIMARY KEY,
+        good_id INTEGER,
+        good_title_snapshot TEXT NOT NULL,
+        login_snapshot TEXT NOT NULL,
+        buyer_id INTEGER,
+        buyer_username TEXT,
+        marker TEXT,
+        hours INTEGER NOT NULL DEFAULT 0,
+        amount_rub REAL NOT NULL DEFAULT 0,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_ts INTEGER NOT NULL,
+        confirmed_ts INTEGER,
+        refunded_ts INTEGER
+    )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -98,13 +141,17 @@ def add_good(
     password: str,
     note: str = "",
     shared_secret: str = "",
+    marker: str = "",
 ):
+    if not marker:
+        marker = extract_marker_from_title(title)
+
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO goods(lot_id, title, login, password, note, shared_secret)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (lot_id, title, login, password, note, shared_secret))
+        INSERT INTO goods(lot_id, title, login, password, note, shared_secret, marker)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (lot_id, title, login, password, note, shared_secret, marker))
     conn.commit()
     good_id = cur.lastrowid
     conn.close()
@@ -147,6 +194,7 @@ def update_good(
     password: str | None = None,
     note: str | None = None,
     shared_secret: str | None = None,
+    marker: str | None = None,
 ) -> bool:
     current = get_good_by_id(good_id)
     if not current:
@@ -159,13 +207,32 @@ def update_good(
     new_note = current["note"] if note is None else note
     new_shared_secret = current["shared_secret"] if shared_secret is None else shared_secret
 
+    if marker is None:
+        new_marker = current["marker"]
+        if not new_marker:
+            new_marker = extract_marker_from_title(new_title)
+    else:
+        new_marker = marker.strip()
+
+    if not new_marker:
+        new_marker = extract_marker_from_title(new_title)
+
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
         UPDATE goods
-        SET lot_id = ?, title = ?, login = ?, password = ?, note = ?, shared_secret = ?
+        SET lot_id = ?, title = ?, login = ?, password = ?, note = ?, shared_secret = ?, marker = ?
         WHERE id = ?
-    """, (new_lot_id, new_title, new_login, new_password, new_note, new_shared_secret, good_id))
+    """, (
+        new_lot_id,
+        new_title,
+        new_login,
+        new_password,
+        new_note,
+        new_shared_secret,
+        new_marker,
+        good_id
+    ))
     conn.commit()
     updated = cur.rowcount > 0
     conn.close()
@@ -232,14 +299,14 @@ def get_good_by_marker(marker: str):
         SELECT *
         FROM goods
         WHERE is_active = 1
-          AND title LIKE ?
+          AND marker = ?
           AND id NOT IN (
                 SELECT good_id
                 FROM rentals
                 WHERE closed = 0
           )
         LIMIT 1
-    """, (f"%{marker}%",)).fetchone()
+    """, (marker,)).fetchone()
     conn.close()
     return row
 
@@ -263,7 +330,15 @@ def count_free_goods():
 def get_active_rental_by_buyer(buyer_id: int):
     conn = get_connection()
     row = conn.execute("""
-        SELECT r.*, g.login, g.password, g.note, g.title, g.shared_secret, g.lot_id AS good_lot_id
+        SELECT
+            r.*,
+            g.login,
+            g.password,
+            g.note,
+            g.title,
+            g.marker,
+            g.shared_secret,
+            g.lot_id AS good_lot_id
         FROM rentals r
         JOIN goods g ON g.id = r.good_id
         WHERE r.closed = 0
@@ -278,15 +353,23 @@ def get_active_rental_by_buyer(buyer_id: int):
 def get_active_rental_by_buyer_and_marker(buyer_id: int, marker: str):
     conn = get_connection()
     row = conn.execute("""
-        SELECT r.*, g.login, g.password, g.note, g.title, g.shared_secret, g.lot_id AS good_lot_id
+        SELECT
+            r.*,
+            g.login,
+            g.password,
+            g.note,
+            g.title,
+            g.marker,
+            g.shared_secret,
+            g.lot_id AS good_lot_id
         FROM rentals r
         JOIN goods g ON g.id = r.good_id
         WHERE r.closed = 0
           AND r.buyer_id = ?
-          AND g.title LIKE ?
+          AND g.marker = ?
         ORDER BY r.id DESC
         LIMIT 1
-    """, (buyer_id, f"%{marker}%")).fetchone()
+    """, (buyer_id, marker)).fetchone()
     conn.close()
     return row
 
@@ -294,7 +377,15 @@ def get_active_rental_by_buyer_and_marker(buyer_id: int, marker: str):
 def list_active_rentals_by_buyer(buyer_id: int):
     conn = get_connection()
     rows = conn.execute("""
-        SELECT r.*, g.login, g.password, g.note, g.title, g.shared_secret, g.lot_id AS good_lot_id
+        SELECT
+            r.*,
+            g.login,
+            g.password,
+            g.note,
+            g.title,
+            g.marker,
+            g.shared_secret,
+            g.lot_id AS good_lot_id
         FROM rentals r
         JOIN goods g ON g.id = r.good_id
         WHERE r.closed = 0
@@ -340,7 +431,15 @@ def get_rental_by_order_id(order_id: str):
 def list_active_rentals():
     conn = get_connection()
     rows = conn.execute("""
-        SELECT r.*, g.login, g.password, g.note, g.title, g.shared_secret, g.lot_id AS good_lot_id
+        SELECT
+            r.*,
+            g.login,
+            g.password,
+            g.note,
+            g.title,
+            g.marker,
+            g.shared_secret,
+            g.lot_id AS good_lot_id
         FROM rentals r
         JOIN goods g ON g.id = r.good_id
         WHERE r.closed = 0
@@ -435,7 +534,7 @@ def set_last_message_id(chat_id: str, message_id: str):
     conn.execute("""
         INSERT INTO chat_state (chat_id, last_message_id)
         VALUES (?, ?)
-        ON CONFLICT(chat_id) DO UPDATE SET last_message_id=excluded.last_message_id
+        ON CONFLICT(chat_id) DO UPDATE SET last_message_id = excluded.last_message_id
     """, (str(chat_id), str(message_id)))
     conn.commit()
     conn.close()
@@ -457,7 +556,144 @@ def set_admin_request_ts(chat_id: str, ts: int):
     conn.execute("""
         INSERT INTO admin_requests (chat_id, last_request_ts)
         VALUES (?, ?)
-        ON CONFLICT(chat_id) DO UPDATE SET last_request_ts=excluded.last_request_ts
+        ON CONFLICT(chat_id) DO UPDATE SET last_request_ts = excluded.last_request_ts
     """, (str(chat_id), int(ts)))
     conn.commit()
     conn.close()
+
+
+def log_order_event(
+    order_id: str,
+    good_id: int | None,
+    good_title_snapshot: str,
+    login_snapshot: str,
+    buyer_id: int | None,
+    buyer_username: str | None,
+    marker: str | None,
+    hours: int,
+    amount_rub: float,
+    kind: str,
+    status: str,
+    created_ts: int,
+):
+    conn = get_connection()
+    conn.execute("""
+        INSERT OR REPLACE INTO order_events(
+            order_id,
+            good_id,
+            good_title_snapshot,
+            login_snapshot,
+            buyer_id,
+            buyer_username,
+            marker,
+            hours,
+            amount_rub,
+            kind,
+            status,
+            created_ts,
+            confirmed_ts,
+            refunded_ts
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+    """, (
+        order_id,
+        good_id,
+        good_title_snapshot,
+        login_snapshot,
+        buyer_id,
+        buyer_username,
+        marker,
+        hours,
+        amount_rub,
+        kind,
+        status,
+        created_ts,
+    ))
+    conn.commit()
+    conn.close()
+
+
+def mark_order_confirmed(order_id: str, confirmed_ts: int):
+    conn = get_connection()
+    conn.execute("""
+        UPDATE order_events
+        SET status = 'confirmed',
+            confirmed_ts = ?
+        WHERE order_id = ?
+    """, (confirmed_ts, order_id))
+    conn.commit()
+    conn.close()
+
+
+def mark_order_refunded(order_id: str, refunded_ts: int):
+    conn = get_connection()
+    conn.execute("""
+        UPDATE order_events
+        SET status = 'refunded',
+            refunded_ts = ?
+        WHERE order_id = ?
+    """, (refunded_ts, order_id))
+    conn.commit()
+    conn.close()
+
+
+def get_confirmed_income_total(start_ts: int | None = None):
+    conn = get_connection()
+
+    if start_ts is None:
+        row = conn.execute("""
+            SELECT
+                COUNT(*) AS orders_count,
+                COALESCE(SUM(amount_rub), 0) AS total_rub
+            FROM order_events
+            WHERE status = 'confirmed'
+        """).fetchone()
+    else:
+        row = conn.execute("""
+            SELECT
+                COUNT(*) AS orders_count,
+                COALESCE(SUM(amount_rub), 0) AS total_rub
+            FROM order_events
+            WHERE status = 'confirmed'
+              AND confirmed_ts >= ?
+        """, (start_ts,)).fetchone()
+
+    conn.close()
+    return row
+
+
+def get_confirmed_income_by_good(start_ts: int | None = None):
+    conn = get_connection()
+
+    if start_ts is None:
+        rows = conn.execute("""
+            SELECT
+                good_id,
+                login_snapshot,
+                good_title_snapshot,
+                marker,
+                COUNT(*) AS orders_count,
+                COALESCE(SUM(amount_rub), 0) AS total_rub
+            FROM order_events
+            WHERE status = 'confirmed'
+            GROUP BY good_id, login_snapshot, good_title_snapshot, marker
+            ORDER BY total_rub DESC
+        """).fetchall()
+    else:
+        rows = conn.execute("""
+            SELECT
+                good_id,
+                login_snapshot,
+                good_title_snapshot,
+                marker,
+                COUNT(*) AS orders_count,
+                COALESCE(SUM(amount_rub), 0) AS total_rub
+            FROM order_events
+            WHERE status = 'confirmed'
+              AND confirmed_ts >= ?
+            GROUP BY good_id, login_snapshot, good_title_snapshot, marker
+            ORDER BY total_rub DESC
+        """, (start_ts,)).fetchall()
+
+    conn.close()
+    return rows

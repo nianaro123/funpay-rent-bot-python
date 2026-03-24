@@ -1,7 +1,7 @@
 # admin_bot.py
 
 import logging
-
+import time
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -23,6 +23,8 @@ from storage import (
     count_free_goods,
     update_good,
     get_good_by_id,
+    get_confirmed_income_total,
+    get_confirmed_income_by_good,
 )
 
 logging.basicConfig(
@@ -30,8 +32,8 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
-ADD_LOT_ID, ADD_TITLE, ADD_LOGIN, ADD_PASSWORD, ADD_NOTE, ADD_SHARED_SECRET = range(6)
-EDIT_GOOD_ID, EDIT_LOT_ID, EDIT_TITLE, EDIT_LOGIN, EDIT_PASSWORD, EDIT_NOTE, EDIT_SHARED_SECRET = range(6, 13)
+ADD_LOT_ID, ADD_MARKER, ADD_TITLE, ADD_LOGIN, ADD_PASSWORD, ADD_NOTE, ADD_SHARED_SECRET = range(7)
+EDIT_GOOD_ID, EDIT_LOT_ID, EDIT_MARKER, EDIT_TITLE, EDIT_LOGIN, EDIT_PASSWORD, EDIT_NOTE, EDIT_SHARED_SECRET = range(7, 15)
 
 
 def is_admin(update: Update) -> bool:
@@ -62,6 +64,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/disablegood good_id\n"
         "/enablegood good_id\n"
         "/delgood good_id\n"
+        "/stats day|week|month|all — доход по подтверждённым заказам\n"
         "/cancel — отменить текущий мастер"
     )
     await update.message.reply_text(text)
@@ -87,8 +90,8 @@ async def goods_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status = "ЗАНЯТ" if g["is_busy"] else ("АКТИВЕН" if g["is_active"] else "ОТКЛЮЧЕН")
         has_secret = "yes" if g["shared_secret"] else "no"
         lines.append(
-            f"{g['id']}. [{status}] lot_id={g['lot_id']} | {g['title']} | "
-            f"login={g['login']} | shared_secret={has_secret}"
+            f"{g['id']}. [{status}] marker={g['marker'] or '-'} | lot_id={g['lot_id']} | "
+            f"{g['title']} | login={g['login']} | shared_secret={has_secret}"
         )
 
     await update.message.reply_text("\n".join(lines))
@@ -115,8 +118,59 @@ async def rentals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for r in rentals:
         lines.append(
             f"Заказ #{r['order_id']} | buyer_id={r['buyer_id']} | "
-            f"good_id={r['good_id']} | lot_id={r['good_lot_id']} | {r['title']}"
+            f"good_id={r['good_id']} | marker={r['marker'] or '-'} | "
+            f"lot_id={r['good_lot_id']} | {r['title']}"
         )
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    period = "day"
+    if context.args:
+        period = context.args[0].lower()
+
+    now = int(time.time())
+
+    if period == "day":
+        start_ts = now - 24 * 60 * 60
+        title = "за сутки"
+    elif period == "week":
+        start_ts = now - 7 * 24 * 60 * 60
+        title = "за неделю"
+    elif period == "month":
+        start_ts = now - 30 * 24 * 60 * 60
+        title = "за месяц"
+    elif period == "all":
+        start_ts = None
+        title = "за всё время"
+    else:
+        await update.message.reply_text("Используй: /stats day | week | month | all")
+        return
+
+    total = get_confirmed_income_total(start_ts)
+    by_good = get_confirmed_income_by_good(start_ts)
+
+    lines = [
+        f"📊 Статистика {title}",
+        f"Подтверждённых заказов: {total['orders_count']}",
+        f"Доход: {float(total['total_rub']):.2f} RUB",
+        "",
+        "По аккаунтам:"
+    ]
+
+    if not by_good:
+        lines.append("Нет подтверждённых заказов за этот период.")
+    else:
+        for row in by_good:
+            lines.append(
+                f"good_id={row['good_id']} | marker={row['marker'] or '-'} | "
+                f"{row['login_snapshot']} | {float(row['total_rub']):.2f} RUB | "
+                f"заказов: {row['orders_count']}"
+            )
 
     await update.message.reply_text("\n".join(lines))
 
@@ -140,6 +194,17 @@ async def addgood_lot_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ADD_LOT_ID
 
     context.user_data["lot_id"] = lot_id
+    await update.message.reply_text("Введите marker (например #1):")
+    return ADD_MARKER
+
+
+async def addgood_marker(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    marker = update.message.text.strip()
+    if not marker.startswith("#"):
+        await update.message.reply_text("Marker должен начинаться с #. Например: #1")
+        return ADD_MARKER
+
+    context.user_data["marker"] = marker
     await update.message.reply_text("Введите title:")
     return ADD_TITLE
 
@@ -179,6 +244,7 @@ async def addgood_shared_secret(update: Update, context: ContextTypes.DEFAULT_TY
 
     good_id = add_good(
         lot_id=context.user_data["lot_id"],
+        marker=context.user_data["marker"],
         title=context.user_data["title"],
         login=context.user_data["login"],
         password=context.user_data["password"],
@@ -196,6 +262,7 @@ async def addgood_shared_secret_skip(update: Update, context: ContextTypes.DEFAU
 
     good_id = add_good(
         lot_id=context.user_data["lot_id"],
+        marker=context.user_data["marker"],
         title=context.user_data["title"],
         login=context.user_data["login"],
         password=context.user_data["password"],
@@ -249,14 +316,37 @@ async def editgood_lot_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return EDIT_LOT_ID
 
     await update.message.reply_text(
+        f"Текущий marker: {context.user_data['good_current']['marker'] or '(пусто)'}\n"
+        "Введите новый marker или /skip:"
+    )
+    return EDIT_MARKER
+
+
+async def editgood_lot_id_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["lot_id"] = None
+    await update.message.reply_text(
+        f"Текущий marker: {context.user_data['good_current']['marker'] or '(пусто)'}\n"
+        "Введите новый marker или /skip:"
+    )
+    return EDIT_MARKER
+
+
+async def editgood_marker(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    marker = update.message.text.strip()
+    if not marker.startswith("#"):
+        await update.message.reply_text("Marker должен начинаться с #. Например: #1")
+        return EDIT_MARKER
+
+    context.user_data["marker"] = marker
+    await update.message.reply_text(
         f"Текущий title: {context.user_data['good_current']['title']}\n"
         "Введите новый title или /skip:"
     )
     return EDIT_TITLE
 
 
-async def editgood_lot_id_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["lot_id"] = None
+async def editgood_marker_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["marker"] = None
     await update.message.reply_text(
         f"Текущий title: {context.user_data['good_current']['title']}\n"
         "Введите новый title или /skip:"
@@ -340,6 +430,7 @@ async def editgood_shared_secret(update: Update, context: ContextTypes.DEFAULT_T
     ok = update_good(
         good_id=context.user_data["good_id"],
         lot_id=context.user_data.get("lot_id"),
+        marker=context.user_data.get("marker"),
         title=context.user_data.get("title"),
         login=context.user_data.get("login"),
         password=context.user_data.get("password"),
@@ -361,6 +452,7 @@ async def editgood_shared_secret_skip(update: Update, context: ContextTypes.DEFA
     ok = update_good(
         good_id=context.user_data["good_id"],
         lot_id=context.user_data.get("lot_id"),
+        marker=context.user_data.get("marker"),
         title=context.user_data.get("title"),
         login=context.user_data.get("login"),
         password=context.user_data.get("password"),
@@ -452,6 +544,7 @@ def main():
         entry_points=[CommandHandler("addgood", addgood_start)],
         states={
             ADD_LOT_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, addgood_lot_id)],
+            ADD_MARKER: [MessageHandler(filters.TEXT & ~filters.COMMAND, addgood_marker)],
             ADD_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, addgood_title)],
             ADD_LOGIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, addgood_login)],
             ADD_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, addgood_password)],
@@ -474,6 +567,10 @@ def main():
             EDIT_LOT_ID: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, editgood_lot_id),
                 CommandHandler("skip", editgood_lot_id_skip),
+            ],
+            EDIT_MARKER: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, editgood_marker),
+                CommandHandler("skip", editgood_marker_skip),
             ],
             EDIT_TITLE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, editgood_title),
@@ -503,6 +600,7 @@ def main():
     app.add_handler(CommandHandler("goods", goods_cmd))
     app.add_handler(CommandHandler("free", free_cmd))
     app.add_handler(CommandHandler("rentals", rentals_cmd))
+    app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(addgood_conv)
     app.add_handler(editgood_conv)
     app.add_handler(CommandHandler("disablegood", disablegood_cmd))

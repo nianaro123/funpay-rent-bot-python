@@ -2,10 +2,12 @@
 
 import logging
 import re
+import time
 
 from storage import (
     get_rental_by_order_id,
     get_active_rental_by_buyer_and_marker,
+    log_order_event,
 )
 from tg_notify import send_admin_notification
 
@@ -25,6 +27,14 @@ def extract_hours(text: str) -> int | None:
 def extract_marker(text: str) -> str | None:
     match = re.search(r"(#\d+)", text)
     return match.group(1) if match else None
+
+
+def get_order_amount_rub(acc, order_id: str) -> float:
+    try:
+        order = acc.get_order(order_id)
+        return float(order.sum) if order and order.sum is not None else 0.0
+    except Exception:
+        return 0.0
 
 
 def handle_paid_order_message(acc, rm, chat_id: int | str, text: str):
@@ -50,6 +60,7 @@ def handle_paid_order_message(acc, rm, chat_id: int | str, text: str):
     msg = acc.get_chat_history(chat_id, interlocutor_username=None, from_id=0)
     buyer_id = None
     buyer_username = None
+    amount_rub = get_order_amount_rub(acc, order_id)
 
     for m in reversed(msg):
         if m.author_id not in (0, acc.id):
@@ -77,10 +88,26 @@ def handle_paid_order_message(acc, rm, chat_id: int | str, text: str):
                 "⏱ Обновлённое время можно посмотреть командой /time"
             )
 
+            log_order_event(
+                order_id=order_id,
+                good_id=active_same_marker_rental["good_id"],
+                good_title_snapshot=active_same_marker_rental["title"],
+                login_snapshot=active_same_marker_rental["login"],
+                buyer_id=buyer_id,
+                buyer_username=buyer_username,
+                marker=marker,
+                hours=hours,
+                amount_rub=amount_rub,
+                kind="extension",
+                status="paid",
+                created_ts=int(time.time()),
+            )
+
             send_admin_notification(
                 f"🔁 Продление аренды\n"
                 f"Клиент: {buyer_username or buyer_id}\n"
                 f"Новый заказ: #{order_id}\n"
+                f"Сумма: {amount_rub:.2f} RUB\n"
                 f"Продлено на: {hours} ч.\n"
                 f"Маркер: {marker}\n"
                 f"good_id: {active_same_marker_rental['good_id']}\n"
@@ -104,10 +131,26 @@ def handle_paid_order_message(acc, rm, chat_id: int | str, text: str):
         acc.send_message(chat_id, "❌ Не удалось выдать аккаунт.")
         return
 
+    log_order_event(
+        order_id=order_id,
+        good_id=issued_good["id"],
+        good_title_snapshot=issued_good["title"],
+        login_snapshot=issued_good["login"],
+        buyer_id=buyer_id,
+        buyer_username=buyer_username,
+        marker=marker,
+        hours=hours,
+        amount_rub=amount_rub,
+        kind="new_rental",
+        status="paid",
+        created_ts=int(time.time()),
+    )
+
     send_admin_notification(
         f"🟢 Новая аренда\n"
         f"Клиент: {buyer_username or buyer_id}\n"
         f"Заказ: #{order_id}\n"
+        f"Сумма: {amount_rub:.2f} RUB\n"
         f"Время: {hours} ч.\n"
         f"Маркер: {marker}\n"
         f"good_id: {issued_good['id']}\n"
