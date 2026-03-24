@@ -7,6 +7,7 @@ from rental_manager import RentalManager
 from storage import (
     get_last_message_id,
     list_active_rentals_by_buyer,
+    list_goods,
     set_last_message_id,
     get_admin_request_ts,
     set_admin_request_ts,
@@ -86,8 +87,22 @@ class AutoReplyBot:
             return
 
         if cmd == "/free":
-            free = self.rm.get_free_accounts()
-            self.acc.send_message(chat_id, f"Свободных аккаунтов: {free}")
+            goods = list_goods()
+            free_goods = [g for g in goods if g["is_active"] and not g["is_busy"]]
+
+            if not free_goods:
+                self.acc.send_message(chat_id, "❌ Сейчас свободных аккаунтов нет.")
+                return
+
+            lines = ["🟢 Свободные аккаунты:"]
+            for i, g in enumerate(free_goods, start=1):
+                lot_link = f"https://funpay.com/lots/offer?id={g['lot_id']}"
+                lines.append(
+                    f"\n{i}. {g['title']}\n"
+                    f"Ссылка на лот: {lot_link}"
+                )
+
+            self.acc.send_message(chat_id, "\n".join(lines))
             return
 
         if cmd == "/admin":

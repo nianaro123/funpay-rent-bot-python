@@ -32,13 +32,37 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
-ADD_LOT_ID, ADD_MARKER, ADD_TITLE, ADD_LOGIN, ADD_PASSWORD, ADD_NOTE, ADD_SHARED_SECRET = range(7)
-EDIT_GOOD_ID, EDIT_LOT_ID, EDIT_MARKER, EDIT_TITLE, EDIT_LOGIN, EDIT_PASSWORD, EDIT_NOTE, EDIT_SHARED_SECRET = range(7, 15)
+ADD_LOT_ID, ADD_TITLE, ADD_LOGIN, ADD_PASSWORD, ADD_NOTE, ADD_SHARED_SECRET = range(6)
+EDIT_GOOD_ID, EDIT_LOT_ID, EDIT_TITLE, EDIT_LOGIN, EDIT_PASSWORD, EDIT_NOTE, EDIT_SHARED_SECRET = range(6, 13)
 
 
 def is_admin(update: Update) -> bool:
     user = update.effective_user
     return bool(user and user.id == TELEGRAM_ADMIN_USER_ID)
+
+
+def format_remaining_time(rental) -> str:
+    now = int(time.time())
+    paid_end_ts = int(rental["paid_end_ts"])
+    grace_end_ts = int(rental["grace_end_ts"])
+
+    if now < paid_end_ts:
+        remaining = paid_end_ts - now
+        hours = remaining // 3600
+        minutes = (remaining % 3600) // 60
+        if hours > 0:
+            return f"{hours} ч. {minutes} мин."
+        return f"{minutes} мин."
+
+    if now < grace_end_ts:
+        remaining = grace_end_ts - now
+        minutes = remaining // 60
+        seconds = remaining % 60
+        if minutes > 0:
+            return f"оплачено истекло, буфер {minutes} мин. {seconds} сек."
+        return f"оплачено истекло, буфер {seconds} сек."
+
+    return "ожидает закрытия"
 
 
 async def admin_only(update: Update) -> bool:
@@ -90,8 +114,8 @@ async def goods_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status = "ЗАНЯТ" if g["is_busy"] else ("АКТИВЕН" if g["is_active"] else "ОТКЛЮЧЕН")
         has_secret = "yes" if g["shared_secret"] else "no"
         lines.append(
-            f"{g['id']}. [{status}] marker={g['marker'] or '-'} | lot_id={g['lot_id']} | "
-            f"{g['title']} | login={g['login']} | shared_secret={has_secret}"
+            f"{g['id']}. [{status}] lot_id={g['lot_id']} | {g['title']} | "
+            f"login={g['login']} | shared_secret={has_secret}"
         )
 
     await update.message.reply_text("\n".join(lines))
@@ -116,10 +140,11 @@ async def rentals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lines = ["🧾 Активные аренды:"]
     for r in rentals:
+        remaining_text = format_remaining_time(r)
         lines.append(
             f"Заказ #{r['order_id']} | buyer_id={r['buyer_id']} | "
-            f"good_id={r['good_id']} | marker={r['marker'] or '-'} | "
-            f"lot_id={r['good_lot_id']} | {r['title']}"
+            f"good_id={r['good_id']} | lot_id={r['good_lot_id']} | "
+            f"{r['title']} | осталось: {remaining_text}"
         )
 
     await update.message.reply_text("\n".join(lines))
@@ -167,9 +192,8 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         for row in by_good:
             lines.append(
-                f"good_id={row['good_id']} | marker={row['marker'] or '-'} | "
-                f"{row['login_snapshot']} | {float(row['total_rub']):.2f} RUB | "
-                f"заказов: {row['orders_count']}"
+                f"good_id={row['good_id']} | {row['login_snapshot']} | "
+                f"{float(row['total_rub']):.2f} RUB | заказов: {row['orders_count']}"
             )
 
     await update.message.reply_text("\n".join(lines))
@@ -194,17 +218,6 @@ async def addgood_lot_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ADD_LOT_ID
 
     context.user_data["lot_id"] = lot_id
-    await update.message.reply_text("Введите marker (например #1):")
-    return ADD_MARKER
-
-
-async def addgood_marker(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    marker = update.message.text.strip()
-    if not marker.startswith("#"):
-        await update.message.reply_text("Marker должен начинаться с #. Например: #1")
-        return ADD_MARKER
-
-    context.user_data["marker"] = marker
     await update.message.reply_text("Введите title:")
     return ADD_TITLE
 
@@ -244,7 +257,6 @@ async def addgood_shared_secret(update: Update, context: ContextTypes.DEFAULT_TY
 
     good_id = add_good(
         lot_id=context.user_data["lot_id"],
-        marker=context.user_data["marker"],
         title=context.user_data["title"],
         login=context.user_data["login"],
         password=context.user_data["password"],
@@ -262,7 +274,6 @@ async def addgood_shared_secret_skip(update: Update, context: ContextTypes.DEFAU
 
     good_id = add_good(
         lot_id=context.user_data["lot_id"],
-        marker=context.user_data["marker"],
         title=context.user_data["title"],
         login=context.user_data["login"],
         password=context.user_data["password"],
@@ -316,37 +327,14 @@ async def editgood_lot_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return EDIT_LOT_ID
 
     await update.message.reply_text(
-        f"Текущий marker: {context.user_data['good_current']['marker'] or '(пусто)'}\n"
-        "Введите новый marker или /skip:"
-    )
-    return EDIT_MARKER
-
-
-async def editgood_lot_id_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["lot_id"] = None
-    await update.message.reply_text(
-        f"Текущий marker: {context.user_data['good_current']['marker'] or '(пусто)'}\n"
-        "Введите новый marker или /skip:"
-    )
-    return EDIT_MARKER
-
-
-async def editgood_marker(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    marker = update.message.text.strip()
-    if not marker.startswith("#"):
-        await update.message.reply_text("Marker должен начинаться с #. Например: #1")
-        return EDIT_MARKER
-
-    context.user_data["marker"] = marker
-    await update.message.reply_text(
         f"Текущий title: {context.user_data['good_current']['title']}\n"
         "Введите новый title или /skip:"
     )
     return EDIT_TITLE
 
 
-async def editgood_marker_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["marker"] = None
+async def editgood_lot_id_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["lot_id"] = None
     await update.message.reply_text(
         f"Текущий title: {context.user_data['good_current']['title']}\n"
         "Введите новый title или /skip:"
@@ -430,7 +418,6 @@ async def editgood_shared_secret(update: Update, context: ContextTypes.DEFAULT_T
     ok = update_good(
         good_id=context.user_data["good_id"],
         lot_id=context.user_data.get("lot_id"),
-        marker=context.user_data.get("marker"),
         title=context.user_data.get("title"),
         login=context.user_data.get("login"),
         password=context.user_data.get("password"),
@@ -452,7 +439,6 @@ async def editgood_shared_secret_skip(update: Update, context: ContextTypes.DEFA
     ok = update_good(
         good_id=context.user_data["good_id"],
         lot_id=context.user_data.get("lot_id"),
-        marker=context.user_data.get("marker"),
         title=context.user_data.get("title"),
         login=context.user_data.get("login"),
         password=context.user_data.get("password"),
@@ -544,7 +530,6 @@ def main():
         entry_points=[CommandHandler("addgood", addgood_start)],
         states={
             ADD_LOT_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, addgood_lot_id)],
-            ADD_MARKER: [MessageHandler(filters.TEXT & ~filters.COMMAND, addgood_marker)],
             ADD_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, addgood_title)],
             ADD_LOGIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, addgood_login)],
             ADD_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, addgood_password)],
@@ -567,10 +552,6 @@ def main():
             EDIT_LOT_ID: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, editgood_lot_id),
                 CommandHandler("skip", editgood_lot_id_skip),
-            ],
-            EDIT_MARKER: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, editgood_marker),
-                CommandHandler("skip", editgood_marker_skip),
             ],
             EDIT_TITLE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, editgood_title),
