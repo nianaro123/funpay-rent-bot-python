@@ -1,6 +1,7 @@
 # admin_bot.py
 
 import logging
+import re
 import time
 
 from FunPayAPI import Account
@@ -36,6 +37,7 @@ from storage import (
     extend_rental,
     add_extension,
 )
+from lot_manager import LotManager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,10 +46,40 @@ logging.basicConfig(
 
 LOGGER = logging.getLogger(__name__)
 
-ADD_LOT_ID, ADD_TITLE, ADD_LOGIN, ADD_PASSWORD, ADD_NOTE, ADD_SHARED_SECRET = range(6)
-EDIT_GOOD_ID, EDIT_LOT_ID, EDIT_TITLE, EDIT_LOGIN, EDIT_PASSWORD, EDIT_NOTE, EDIT_SHARED_SECRET = range(6, 13)
+ADD_LOT_LINK, ADD_LOGIN, ADD_PASSWORD, ADD_NOTE, ADD_SHARED_SECRET = range(5)
+EDIT_GOOD_ID, EDIT_LOT_LINK, EDIT_LOGIN, EDIT_PASSWORD, EDIT_NOTE, EDIT_SHARED_SECRET = range(5, 11)
 
 FUNPAY_ACC = None
+
+
+
+def parse_lot_id_from_input(value: str) -> int | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+
+    if raw.isdigit():
+        return int(raw)
+
+    match = re.search(r"[?&]id=(\d+)", raw)
+    if match:
+        return int(match.group(1))
+
+    return None
+
+
+def fetch_lot_title(lot_id: int) -> str:
+    if FUNPAY_ACC is None:
+        raise RuntimeError("FunPay аккаунт не инициализирован в admin_bot.py")
+
+    manager = LotManager(FUNPAY_ACC)
+    ru, en = manager.get_summary_fields(lot_id)
+
+    title = (ru or "").strip() or (en or "").strip()
+    if not title:
+        raise RuntimeError("Не удалось получить title лота с FunPay")
+
+    return title
 
 
 def init_funpay_account():
@@ -378,30 +410,43 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- ADDGOOD WIZARD ----------
 
+
 async def addgood_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
         return ConversationHandler.END
 
     context.user_data.clear()
-    await update.message.reply_text("Введите lot_id:")
-    return ADD_LOT_ID
+    await update.message.reply_text(
+        "Отправьте ссылку на лот FunPay или просто lot_id.\n"
+        "Пример: https://funpay.com/lots/offer?id=61816431"
+    )
+    return ADD_LOT_LINK
 
 
-async def addgood_lot_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def addgood_lot_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lot_input = update.message.text.strip()
+    lot_id = parse_lot_id_from_input(lot_input)
+    if not lot_id:
+        await update.message.reply_text(
+            "Не удалось определить lot_id. Отправьте ссылку вида https://funpay.com/lots/offer?id=123456 или просто число."
+        )
+        return ADD_LOT_LINK
+
     try:
-        lot_id = int(update.message.text.strip())
-    except ValueError:
-        await update.message.reply_text("lot_id должен быть числом. Введите lot_id:")
-        return ADD_LOT_ID
+        title = fetch_lot_title(lot_id)
+    except Exception as e:
+        LOGGER.exception("Failed to fetch title for lot_id=%s: %s", lot_id, e)
+        await update.message.reply_text(
+            "❌ Не удалось получить title лота с FunPay. Проверь ссылку/ID и доступ к аккаунту."
+        )
+        return ADD_LOT_LINK
 
     context.user_data["lot_id"] = lot_id
-    await update.message.reply_text("Введите title:")
-    return ADD_TITLE
-
-
-async def addgood_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["title"] = update.message.text.strip()
-    await update.message.reply_text("Введите login:")
+    context.user_data["title"] = title
+    await update.message.reply_text(
+        f"Лот найден.\nlot_id: {lot_id}\ntitle: {title}\n\nВведите login:"
+    )
     return ADD_LOGIN
 
 
@@ -442,7 +487,9 @@ async def addgood_shared_secret(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
     context.user_data.clear()
-    await update.message.reply_text(f"✅ Товар добавлен. good_id={good_id}")
+    lot_id = context.user_data["lot_id"]
+    title = context.user_data["title"]
+    await update.message.reply_text(f"✅ Товар добавлен. good_id={good_id}\nlot_id={lot_id}\ntitle={title}")
     return ConversationHandler.END
 
 
@@ -459,7 +506,9 @@ async def addgood_shared_secret_skip(update: Update, context: ContextTypes.DEFAU
     )
 
     context.user_data.clear()
-    await update.message.reply_text(f"✅ Товар добавлен. good_id={good_id}")
+    lot_id = context.user_data["lot_id"]
+    title = context.user_data["title"]
+    await update.message.reply_text(f"✅ Товар добавлен. good_id={good_id}\nlot_id={lot_id}\ntitle={title}")
     return ConversationHandler.END
 
 
@@ -491,44 +540,45 @@ async def editgood_good_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"Текущий lot_id: {good['lot_id']}\n"
-        "Введите новый lot_id или /skip:"
+        f"Текущий title в базе: {good['title']}\n\n"
+        "Отправьте новую ссылку на лот / новый lot_id или /skip:"
     )
-    return EDIT_LOT_ID
+    return EDIT_LOT_LINK
 
 
-async def editgood_lot_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def editgood_lot_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lot_input = update.message.text.strip()
+    lot_id = parse_lot_id_from_input(lot_input)
+    if not lot_id:
+        await update.message.reply_text(
+            "Не удалось определить lot_id. Отправьте ссылку вида https://funpay.com/lots/offer?id=123456 или просто число, либо /skip."
+        )
+        return EDIT_LOT_LINK
+
     try:
-        context.user_data["lot_id"] = int(update.message.text.strip())
-    except ValueError:
-        await update.message.reply_text("lot_id должен быть числом или /skip.")
-        return EDIT_LOT_ID
+        title = fetch_lot_title(lot_id)
+    except Exception as e:
+        LOGGER.exception("Failed to fetch title for lot_id=%s during editgood: %s", lot_id, e)
+        await update.message.reply_text(
+            "❌ Не удалось получить title лота с FunPay. Проверь ссылку/ID и доступ к аккаунту."
+        )
+        return EDIT_LOT_LINK
 
+    context.user_data["lot_id"] = lot_id
+    context.user_data["title"] = title
     await update.message.reply_text(
-        f"Текущий title: {context.user_data['good_current']['title']}\n"
-        "Введите новый title или /skip:"
-    )
-    return EDIT_TITLE
-
-
-async def editgood_lot_id_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["lot_id"] = None
-    await update.message.reply_text(
-        f"Текущий title: {context.user_data['good_current']['title']}\n"
-        "Введите новый title или /skip:"
-    )
-    return EDIT_TITLE
-
-
-async def editgood_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["title"] = update.message.text.strip()
-    await update.message.reply_text(
+        f"Новый lot_id: {lot_id}\n"
+        f"Новый title из FunPay: {title}\n\n"
         f"Текущий login: {context.user_data['good_current']['login']}\n"
         "Введите новый login или /skip:"
     )
     return EDIT_LOGIN
 
 
-async def editgood_title_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def editgood_lot_link_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["lot_id"] = None
     context.user_data["title"] = None
     await update.message.reply_text(
         f"Текущий login: {context.user_data['good_current']['login']}\n"
@@ -707,8 +757,7 @@ def main():
     addgood_conv = ConversationHandler(
         entry_points=[CommandHandler("addgood", addgood_start)],
         states={
-            ADD_LOT_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, addgood_lot_id)],
-            ADD_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, addgood_title)],
+            ADD_LOT_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, addgood_lot_link)],
             ADD_LOGIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, addgood_login)],
             ADD_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, addgood_password)],
             ADD_NOTE: [
@@ -727,13 +776,9 @@ def main():
         entry_points=[CommandHandler("editgood", editgood_start)],
         states={
             EDIT_GOOD_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, editgood_good_id)],
-            EDIT_LOT_ID: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, editgood_lot_id),
-                CommandHandler("skip", editgood_lot_id_skip),
-            ],
-            EDIT_TITLE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, editgood_title),
-                CommandHandler("skip", editgood_title_skip),
+            EDIT_LOT_LINK: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, editgood_lot_link),
+                CommandHandler("skip", editgood_lot_link_skip),
             ],
             EDIT_LOGIN: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, editgood_login),
