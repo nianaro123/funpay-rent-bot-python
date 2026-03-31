@@ -1,2 +1,2 @@
 # funpay-rent-bot-python
-bot for rent dota2 accs on funpay
+bot for rent steam accounts on funpay
