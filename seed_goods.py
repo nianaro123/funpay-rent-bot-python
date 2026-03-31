@@ -9,7 +9,13 @@ add_good(
     password="Op0k2QZPmksnsRtuxs",
     note="основной аккаунт"
 )
-
+add_good(
+    lot_id=62877231,
+    title="🔥💲💲🔥ТЕСТОВЫЙ ЛОТ, НЕ ПОКУПАЙТЕ 7400 MMR, АРЕНДА ДО 1 ПОРАЖЕНИЯ🔥💲💲🔥#2",
+    login="login1",
+    password="somepass1234",
+    note="основной аккаунт"
+)
 
 
 print("Товары добавлены")

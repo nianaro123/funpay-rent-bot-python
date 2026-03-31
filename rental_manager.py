@@ -1,9 +1,14 @@
 # rental_manager.py
 
 import logging
+import re
 import secrets
+import sqlite3
 import time
 
+from storage import mark_order_confirmed, mark_order_refunded
+from lot_manager import LotManager
+from steam_guard import generate_steam_guard_code
 from storage import (
     get_good_by_marker,
     count_free_goods,
@@ -18,6 +23,7 @@ from storage import (
     set_bonus_applied,
     add_extension,
 )
+from tg_notify import send_admin_notification
 
 LOGGER = logging.getLogger(__name__)
 
@@ -29,6 +35,7 @@ class RentalManager:
 
     def __init__(self, acc):
         self.acc = acc
+        self.lot_manager = LotManager(acc)
 
     def generate_code(self, length: int = 8) -> str:
         return secrets.token_hex(8)[:length].upper()
@@ -58,35 +65,48 @@ class RentalManager:
         buyer_username: str | None,
         chat_id: int | str,
         hours: int,
-    ) -> bool:
+    ):
         existing = get_rental_by_order_id(order_id)
         if existing:
             LOGGER.info("Заказ %s уже обработан", order_id)
-            return False
+            return None
 
         good = get_good_by_marker(good_marker)
         if not good:
             self.acc.send_message(chat_id, f"❌ В базе не найден товар для маркера {good_marker}")
-            return False
+            return None
 
         start_ts = int(time.time())
         paid_end_ts = start_ts + hours * 3600
         grace_end_ts = paid_end_ts + self.GRACE_SECONDS
         code = self.generate_code()
 
-        # lot_id здесь больше не используем как обязательное поле выдачи
-        create_rental(
-            order_id=order_id,
-            lot_id=0,
-            chat_id=str(chat_id),
-            buyer_id=buyer_id,
-            buyer_username=buyer_username,
-            good_id=good["id"],
-            code=code,
-            start_ts=start_ts,
-            paid_end_ts=paid_end_ts,
-            grace_end_ts=grace_end_ts,
-        )
+        try:
+            create_rental(
+                order_id=order_id,
+                lot_id=good["lot_id"],
+                chat_id=str(chat_id),
+                buyer_id=buyer_id,
+                buyer_username=buyer_username,
+                good_id=good["id"],
+                code=code,
+                start_ts=start_ts,
+                paid_end_ts=paid_end_ts,
+                grace_end_ts=grace_end_ts,
+            )
+        except sqlite3.IntegrityError:
+            LOGGER.warning(
+                "Попытка двойной выдачи good_id=%s для order_id=%s",
+                good["id"],
+                order_id,
+            )
+            self.acc.send_message(
+                chat_id,
+                "❌ Этот аккаунт уже занят или только что был выдан другому покупателю."
+            )
+            return None
+
+        steam_guard_code = generate_steam_guard_code(good["shared_secret"])
 
         lines = [
             "✅ Данные для входа:",
@@ -94,24 +114,58 @@ class RentalManager:
             f"Пароль: {good['password']}",
         ]
 
-        if good["note"]:
-            lines.append(f"Примечание: {good['note']}")
+        if steam_guard_code:
+            lines.append(f"Steam Guard код: {steam_guard_code}")
+        else:
+            lines.append("Steam Guard код: не задан")
 
         lines.extend([
             "",
-            f"🧾 Ваш уникальный код: {code}",
             f"⏱ Время аренды: {hours} ч.",
             "⚠️ За 10 минут до окончания аренды я отправлю предупреждение.",
-            "⌛ После завершения аренды действует буфер 15 минут.",
         ])
 
-        message = "\n".join(lines)
-        self.acc.send_message(chat_id, message)
+        lot_id = good["lot_id"]
+        if lot_id:
+            lot_url = f"https://funpay.com/lots/offer?id={lot_id}"
+            lines.extend([
+                "",
+                "🔄 При желании продлить аренду для этого аккаунта, оплачивайте этот лот:",
+                lot_url,
+            ])
+
+        self.acc.send_message(chat_id, "".join(lines))
+
+        try:
+            if good["lot_id"]:
+                self.lot_manager.set_lot_busy(int(good["lot_id"]))
+                LOGGER.info(
+                    "Лот %s переведён в статус 'Занят!' после выдачи заказа %s",
+                    good["lot_id"],
+                    order_id,
+                )
+        except Exception as e:
+            LOGGER.exception(
+                "Не удалось сменить название лота %s на 'Занят!': %s",
+                good["lot_id"],
+                e,
+            )
 
         LOGGER.info(
             "Выдан аккаунт good_id=%s, marker=%s, order_id=%s",
             good["id"], good_marker, order_id
         )
+        return good
+
+    def extend_rental_by_order_id(self, order_id: str, hours: int, source: str = "same_marker_rebuy") -> bool:
+        rental = get_rental_by_order_id(order_id)
+        if not rental or rental["closed"]:
+            return False
+
+        add_seconds = hours * 3600
+        extend_rental(order_id, add_seconds)
+        add_extension(rental["id"], source, hours, int(time.time()))
+        LOGGER.info("Продлена аренда order_id=%s на %s ч. source=%s", order_id, hours, source)
         return True
 
     def handle_review_notice(self, chat_id: int | str, text: str) -> None:
@@ -120,25 +174,67 @@ class RentalManager:
             "⭐ Спасибо за отзыв! Функция бонусного продления будет подключена следующим шагом."
         )
 
-    def extend_active_rental_for_buyer(
-        self,
-        buyer_id: int,
-        hours: int,
-        source: str = "manual"
-    ) -> bool:
-        rental = get_active_rental_by_buyer(buyer_id)
+    def handle_refund_notice(self, chat_id: int | str, text: str) -> None:
+        match = re.search(r"#([A-Z0-9]+)", text)
+        if not match:
+            LOGGER.warning("Не удалось извлечь order_id из сообщения о возврате: %s", text)
+            return
+
+        order_id = match.group(1)
+        rental = get_rental_by_order_id(order_id)
+
         if not rental:
-            return False
+            LOGGER.info("Для возврата order_id=%s активная аренда не найдена", order_id)
+            return
 
-        add_seconds = hours * 3600
-        extend_rental(rental["order_id"], add_seconds)
-        add_extension(rental["id"], source, hours, int(time.time()))
+        if rental["closed"]:
+            LOGGER.info("Аренда order_id=%s уже закрыта к моменту обработки возврата", order_id)
+            return
 
-        LOGGER.info(
-            "Продлена аренда order_id=%s на %s ч. source=%s",
-            rental["order_id"], hours, source,
+        try:
+            lot_id = int(rental["lot_id"]) if rental["lot_id"] else 0
+            if lot_id:
+                self.lot_manager.set_lot_free(lot_id)
+                LOGGER.info("Лот %s переведён в статус 'Свободен!' после возврата по заказу %s", lot_id, order_id)
+        except Exception as e:
+            LOGGER.exception(
+                "Не удалось вернуть лот в статус 'Свободен!' после возврата order_id=%s: %s",
+                order_id,
+                e,
+            )
+
+        try:
+            close_rental(order_id)
+            mark_order_refunded(order_id, int(time.time()))
+            LOGGER.info("Аренда закрыта после возврата средств, order_id=%s", order_id)
+        except Exception as e:
+            LOGGER.exception("Не удалось закрыть аренду после возврата order_id=%s: %s", order_id, e)
+            return
+
+        try:
+            self.acc.send_message(
+                chat_id,
+                f"ℹ️ Заказ #{order_id}: возврат средств зафиксирован. "
+                "Аренда закрыта, аккаунт снова доступен для аренды."
+            )
+        except Exception as e:
+            LOGGER.exception("Не удалось отправить сообщение после возврата order_id=%s: %s", order_id, e)
+
+    def handle_order_confirmed_notice(self, chat_id: int | str, text: str) -> None:
+        match_order = re.search(r"#([A-Z0-9]+)", text)
+        match_buyer = re.search(r"Покупатель\s+(.+?)\s+подтвердил успешное выполнение", text)
+
+        order_id = match_order.group(1) if match_order else "UNKNOWN"
+        buyer_name = match_buyer.group(1) if match_buyer else "Неизвестный клиент"
+        chat_link = f"https://funpay.com/chat/?node={chat_id}"
+        mark_order_confirmed(order_id, int(time.time()))
+
+        send_admin_notification(
+            f"✅ Аренда подтверждена"
+            f"Клиент: {buyer_name}"
+            f"Заказ: #{order_id}"
+            f"Чат: {chat_link}"
         )
-        return True
 
     def apply_review_bonus(self, buyer_id: int, chat_id: int | str) -> bool:
         rental = get_active_rental_by_buyer(buyer_id)
@@ -164,24 +260,57 @@ class RentalManager:
         for rental in rentals:
             order_id = rental["order_id"]
             chat_id = rental["chat_id"]
+            buyer_name = rental["buyer_username"] or rental["buyer_id"] or "Неизвестный клиент"
 
             time_left = rental["paid_end_ts"] - now
             if rental["warned_10m"] == 0 and 0 < time_left <= self.WARNING_SECONDS:
                 try:
-                    self.acc.send_message(chat_id, "⚠️ До окончания аренды осталось 10 минут.")
+                    self.acc.send_message(
+                        chat_id,
+                        f"⚠️ Заказ #{order_id}: до окончания аренды осталось 10 минут."
+                    )
                     mark_warned(order_id)
                 except Exception as e:
                     LOGGER.exception("Ошибка предупреждения order_id=%s: %s", order_id, e)
 
             if rental["ended_msg_sent"] == 0 and now >= rental["paid_end_ts"]:
                 try:
-                    self.acc.send_message(chat_id, "⛔ Время аренды завершено. У вас есть ещё 15 минут буфера.")
+                    self.acc.send_message(
+                        chat_id,
+                        f"⛔ Заказ #{order_id}: время аренды завершено."
+                        "Пожалуйста, покиньте аккаунт и подтвердите лот."
+                    )
                     mark_ended_msg(order_id)
                 except Exception as e:
                     LOGGER.exception("Ошибка сообщения о завершении order_id=%s: %s", order_id, e)
 
             if now >= rental["grace_end_ts"]:
                 try:
+                    try:
+                        lot_id = int(rental["good_lot_id"]) if rental["good_lot_id"] else 0
+                        if lot_id:
+                            self.lot_manager.set_lot_free(lot_id)
+                            LOGGER.info("Лот %s переведён в статус 'Свободен!'", lot_id)
+                    except Exception as e:
+                        LOGGER.exception(
+                            "Не удалось сменить название лота обратно на 'Свободен!' для order_id=%s: %s",
+                            order_id,
+                            e,
+                        )
+
                     close_rental(order_id)
+                    LOGGER.info("Аренда закрыта order_id=%s", order_id)
+
+                    chat_link = f"https://funpay.com/chat/?node={chat_id}"
+                    send_admin_notification(
+                        f"⛔ Аренда закрыта автоматически без подтверждения"
+                        f"Клиент: {buyer_name}"
+                        f"Заказ: #{order_id}"
+                        f"good_id: {rental['good_id']}"
+                        f"Маркер: {rental['marker']}"
+                        f"Логин аккаунта: {rental['login']}"
+                        f"Статус: аккаунт возвращён в пул, лот переведён в 'Свободен!'"
+                        f"Чат: {chat_link}"
+                    )
                 except Exception as e:
                     LOGGER.exception("Ошибка закрытия аренды order_id=%s: %s", order_id, e)
