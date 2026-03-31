@@ -1,2 +1,5 @@
 
 funpayapi
+python-telegram-bot==21.10
+steam-totp
+requests

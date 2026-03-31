@@ -11,6 +11,8 @@ from storage import (
     set_last_message_id,
     get_admin_request_ts,
     set_admin_request_ts,
+    is_chat_welcomed,
+    mark_chat_welcomed,
 )
 from config import WELCOME_TEXT, HELP_TEXT
 from order_handler import handle_paid_order_message
@@ -24,13 +26,9 @@ class AutoReplyBot:
     def __init__(self, acc):
         self.acc = acc
         self.rm = RentalManager(acc)
-        self.welcomed_chats = set()
 
     def handle_new_message(self, event: NewMessageEvent):
         msg = event.message
-
-        if getattr(msg, "by_bot", False):
-            return
 
         text = (msg.text or "").strip()
         if not text:
@@ -42,10 +40,19 @@ class AutoReplyBot:
         msg_id = str(getattr(msg, "id", ""))
 
         last_id = get_last_message_id(str(chat_id))
-        if last_id is not None and msg_id and msg_id <= str(last_id):
+        if last_id is not None and msg_id and self._message_id_is_not_new(msg_id, last_id):
             return
 
         try:
+            # Игнорируем сообщения, которые отправил сам бот
+            if getattr(msg, "by_bot", False):
+                return
+
+            # Игнорируем свои собственные сообщения продавца
+            if author_id == self.acc.id:
+                return
+
+            # Системные сообщения FunPay
             if author_id == 0:
                 low = text.lower()
 
@@ -67,17 +74,26 @@ class AutoReplyBot:
 
                 return
 
+            # Команды клиента
             if text.startswith("/"):
                 self.handle_command(chat_id, text, author_id, author)
                 return
 
-            if chat_id not in self.welcomed_chats:
+            # Приветствие клиента только один раз даже после рестарта
+            if not is_chat_welcomed(str(chat_id)):
                 self.acc.send_message(chat_id, WELCOME_TEXT)
-                self.welcomed_chats.add(chat_id)
+                mark_chat_welcomed(str(chat_id))
 
         finally:
             if msg_id:
                 set_last_message_id(str(chat_id), msg_id)
+
+    @staticmethod
+    def _message_id_is_not_new(current_id: str, last_id: str) -> bool:
+        try:
+            return int(current_id) <= int(last_id)
+        except (TypeError, ValueError):
+            return current_id <= str(last_id)
 
     def handle_command(self, chat_id, text, author_id=None, author=None):
         cmd = text.split()[0].lower()
@@ -98,11 +114,11 @@ class AutoReplyBot:
             for i, g in enumerate(free_goods, start=1):
                 lot_link = f"https://funpay.com/lots/offer?id={g['lot_id']}"
                 lines.append(
-                    f"\n{i}. {g['title']}\n"
+                    f"{i}. {g['title']}"
                     f"Ссылка на лот: {lot_link}"
                 )
 
-            self.acc.send_message(chat_id, "\n".join(lines))
+            self.acc.send_message(chat_id, "".join(lines))
             return
 
         if cmd == "/admin":
@@ -130,8 +146,8 @@ class AutoReplyBot:
             chat_link = f"https://funpay.com/chat/?node={chat_id}"
 
             notify_text = (
-                f"Клиент {username} отправил запрос на диалог с вами.\n\n"
-                f"Ссылка на чат:\n{chat_link}"
+                f"Клиент {username} отправил запрос на диалог с вами."
+                f"Ссылка на чат:{chat_link}"
             )
 
             ok = send_admin_notification(notify_text)
@@ -163,11 +179,11 @@ class AutoReplyBot:
             lines = ["📄 Ваши активные аренды:"]
             for i, rental in enumerate(rentals, start=1):
                 lines.append(
-                    f"\n{i}. {rental['title']}\n"
-                    f"Логин: {rental['login']}\n"
+                    f"{i}. {rental['title']}"
+                    f"Логин: {rental['login']}"
                     f"Пароль: {rental['password']}"
                 )
-            self.acc.send_message(chat_id, "\n".join(lines))
+            self.acc.send_message(chat_id, "".join(lines))
             return
 
         if cmd == "/code":
@@ -182,7 +198,7 @@ class AutoReplyBot:
                     lines.append(f"{i}. {rental['login']} — код: {code}")
                 else:
                     lines.append(f"{i}. {rental['login']} — shared_secret не задан")
-            self.acc.send_message(chat_id, "\n".join(lines))
+            self.acc.send_message(chat_id, "".join(lines))
             return
 
         if cmd == "/time":
@@ -194,7 +210,7 @@ class AutoReplyBot:
             for i, rental in enumerate(rentals, start=1):
                 remaining = self.rm.get_remaining_time(rental)
                 lines.append(f"{i}. {rental['title']} — осталось: {remaining}")
-            self.acc.send_message(chat_id, "\n".join(lines))
+            self.acc.send_message(chat_id, "".join(lines))
             return
 
         self.acc.send_message(chat_id, "Неизвестная команда. Напишите /help")

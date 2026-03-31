@@ -28,7 +28,6 @@ def ensure_goods_columns(conn):
     if "marker" not in columns:
         conn.execute("ALTER TABLE goods ADD COLUMN marker TEXT DEFAULT ''")
 
-    # backfill marker for old rows
     rows = conn.execute("SELECT id, title, marker FROM goods").fetchall()
     for row in rows:
         current_marker = row["marker"] or ""
@@ -40,6 +39,13 @@ def ensure_goods_columns(conn):
                 "UPDATE goods SET marker = ? WHERE id = ?",
                 (marker, row["id"])
             )
+
+
+def ensure_chat_state_columns(conn):
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(chat_state)").fetchall()}
+
+    if "welcomed" not in columns:
+        conn.execute("ALTER TABLE chat_state ADD COLUMN welcomed INTEGER NOT NULL DEFAULT 0")
 
 
 def init_db():
@@ -94,9 +100,12 @@ def init_db():
     conn.execute("""
     CREATE TABLE IF NOT EXISTS chat_state (
         chat_id TEXT PRIMARY KEY,
-        last_message_id TEXT
+        last_message_id TEXT,
+        welcomed INTEGER NOT NULL DEFAULT 0
     )
     """)
+
+    ensure_chat_state_columns(conn)
 
     conn.execute("""
     CREATE TABLE IF NOT EXISTS admin_requests (
@@ -536,6 +545,28 @@ def set_last_message_id(chat_id: str, message_id: str):
         VALUES (?, ?)
         ON CONFLICT(chat_id) DO UPDATE SET last_message_id = excluded.last_message_id
     """, (str(chat_id), str(message_id)))
+    conn.commit()
+    conn.close()
+
+
+def is_chat_welcomed(chat_id: str) -> bool:
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT welcomed
+        FROM chat_state
+        WHERE chat_id = ?
+    """, (str(chat_id),)).fetchone()
+    conn.close()
+    return bool(row["welcomed"]) if row else False
+
+
+def mark_chat_welcomed(chat_id: str):
+    conn = get_connection()
+    conn.execute("""
+        INSERT INTO chat_state (chat_id, welcomed)
+        VALUES (?, 1)
+        ON CONFLICT(chat_id) DO UPDATE SET welcomed = 1
+    """, (str(chat_id),))
     conn.commit()
     conn.close()
 

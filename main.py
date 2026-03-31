@@ -2,7 +2,6 @@
 
 import logging
 import threading
-import time
 
 from FunPayAPI import Account
 from FunPayAPI.updater.runner import Runner
@@ -55,7 +54,10 @@ def main():
     try:
         for event in runner.listen(requests_delay=REQUESTS_DELAY):
             if isinstance(event, NewMessageEvent):
-                bot.handle_new_message(event)
+                try:
+                    bot.handle_new_message(event)
+                except Exception:
+                    logging.exception("Ошибка при обработке нового сообщения")
 
     except KeyboardInterrupt:
         print("Остановлено")

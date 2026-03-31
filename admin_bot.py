@@ -97,6 +97,11 @@ def format_remaining_time(rental) -> str:
     return "ожидает закрытия"
 
 
+def get_rentals_snapshot():
+    rentals = list_active_rentals()
+    return list(rentals)
+
+
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
         return
@@ -108,6 +113,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/free — число свободных товаров\n"
         "/rentals — активные аренды + оставшееся время\n"
         "/extendrent ORDER_ID HOURS — вручную продлить аренду клиенту\n"
+        "/extendrentrow N HOURS — вручную продлить аренду по номеру строки из /rentals\n"
         "/addgood — пошаговое добавление товара\n"
         "/editgood — пошаговое редактирование товара\n"
         "/disablegood good_id\n"
@@ -135,12 +141,16 @@ async def goods_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     lines = ["📦 Товары в базе:"]
-    for g in goods:
+    for i, g in enumerate(goods, start=1):
         status = "ЗАНЯТ" if g["is_busy"] else ("АКТИВЕН" if g["is_active"] else "ОТКЛЮЧЕН")
         has_secret = "yes" if g["shared_secret"] else "no"
         lines.append(
-            f"{g['id']}. [{status}] lot_id={g['lot_id']} | {g['title']} | "
-            f"login={g['login']} | shared_secret={has_secret}"
+            f"\n{i}. good_id={g['id']}\n"
+            f"Статус: {status}\n"
+            f"lot_id: {g['lot_id']}\n"
+            f"title: {g['title']}\n"
+            f"login: {g['login']}\n"
+            f"shared_secret: {has_secret}"
         )
 
     await update.message.reply_text("\n".join(lines))
@@ -158,18 +168,23 @@ async def rentals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
         return
 
-    rentals = list_active_rentals()
+    rentals = get_rentals_snapshot()
     if not rentals:
         await update.message.reply_text("Активных аренд нет.")
         return
 
     lines = ["🧾 Активные аренды:"]
-    for r in rentals:
+    for i, r in enumerate(rentals, start=1):
         remaining_text = format_remaining_time(r)
+        buyer_name = r["buyer_username"] if r["buyer_username"] else "unknown"
         lines.append(
-            f"Заказ #{r['order_id']} | buyer_id={r['buyer_id']} | "
-            f"good_id={r['good_id']} | lot_id={r['good_lot_id']} | "
-            f"{r['title']} | осталось: {remaining_text}"
+            f"\n{i}. Заказ #{r['order_id']}\n"
+            f"Клиент: {buyer_name}\n"
+            f"buyer_id: {r['buyer_id']}\n"
+            f"good_id: {r['good_id']}\n"
+            f"lot_id: {r['good_lot_id']}\n"
+            f"title: {r['title']}\n"
+            f"Осталось: {remaining_text}"
         )
 
     await update.message.reply_text("\n".join(lines))
@@ -180,7 +195,10 @@ async def extendrent_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if len(context.args) != 2:
-        await update.message.reply_text("Формат: /extendrent ORDER_ID HOURS\nПример: /extendrent DD6RLVKJ 2")
+        await update.message.reply_text(
+            "Формат: /extendrent ORDER_ID HOURS\n"
+            "Пример: /extendrent DD6RLVKJ 2"
+        )
         return
 
     order_id = context.args[0].strip().upper()
@@ -230,6 +248,79 @@ async def extendrent_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = (
         f"✅ Заказ #{order_id} продлён на {hours} ч.\n"
+        f"Текущее время: {remaining_text}\n"
+        f"Сообщение клиенту: {'отправлено' if buyer_msg_sent else 'не отправлено'}"
+    )
+    await update.message.reply_text(text)
+
+
+async def extendrentrow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    if len(context.args) != 2:
+        await update.message.reply_text(
+            "Формат: /extendrentrow N HOURS\n"
+            "Сначала вызови /rentals, потом используй номер строки.\n"
+            "Пример: /extendrentrow 2 3"
+        )
+        return
+
+    try:
+        row_num = int(context.args[0])
+        hours = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("N и HOURS должны быть числами.")
+        return
+
+    if row_num <= 0:
+        await update.message.reply_text("N должен быть больше 0.")
+        return
+
+    if hours <= 0:
+        await update.message.reply_text("Количество часов должно быть больше 0.")
+        return
+
+    rentals = get_rentals_snapshot()
+    if not rentals:
+        await update.message.reply_text("Активных аренд нет.")
+        return
+
+    if row_num > len(rentals):
+        await update.message.reply_text(
+            f"❌ Строки {row_num} нет. Сейчас активных аренд: {len(rentals)}."
+        )
+        return
+
+    rental = rentals[row_num - 1]
+    order_id = rental["order_id"]
+
+    try:
+        add_seconds = hours * 3600
+        extend_rental(order_id, add_seconds)
+        add_extension(rental["id"], "admin_manual_row", hours, int(time.time()))
+    except Exception as e:
+        LOGGER.exception("Failed to extend rental manually by row for order_id=%s: %s", order_id, e)
+        await update.message.reply_text(f"❌ Не удалось продлить заказ #{order_id}.")
+        return
+
+    updated_rental = get_rental_by_order_id(order_id)
+    remaining_text = format_remaining_time(updated_rental)
+
+    buyer_msg_sent = False
+    if FUNPAY_ACC is not None:
+        try:
+            FUNPAY_ACC.send_message(
+                updated_rental["chat_id"],
+                f"✅ Продавец вручную продлил вашу аренду по заказу #{order_id} на {hours} ч.\n"
+                f"⏱ Текущее оставшееся время: {remaining_text}"
+            )
+            buyer_msg_sent = True
+        except Exception as e:
+            LOGGER.exception("Failed to send buyer message for manual extension by row order_id=%s: %s", order_id, e)
+
+    text = (
+        f"✅ Строка {row_num} / заказ #{order_id} продлён на {hours} ч.\n"
         f"Текущее время: {remaining_text}\n"
         f"Сообщение клиенту: {'отправлено' if buyer_msg_sent else 'не отправлено'}"
     )
@@ -669,6 +760,7 @@ def main():
     app.add_handler(CommandHandler("free", free_cmd))
     app.add_handler(CommandHandler("rentals", rentals_cmd))
     app.add_handler(CommandHandler("extendrent", extendrent_cmd))
+    app.add_handler(CommandHandler("extendrentrow", extendrentrow_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(addgood_conv)
     app.add_handler(editgood_conv)

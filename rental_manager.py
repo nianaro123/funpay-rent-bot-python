@@ -125,7 +125,16 @@ class RentalManager:
             "⚠️ За 10 минут до окончания аренды я отправлю предупреждение.",
         ])
 
-        self.acc.send_message(chat_id, "\n".join(lines))
+        lot_id = good["lot_id"]
+        if lot_id:
+            lot_url = f"https://funpay.com/lots/offer?id={lot_id}"
+            lines.extend([
+                "",
+                "🔄 При желании продлить аренду для этого аккаунта, оплачивайте этот лот:",
+                lot_url,
+            ])
+
+        self.acc.send_message(chat_id, "".join(lines))
 
         try:
             if good["lot_id"]:
@@ -221,9 +230,9 @@ class RentalManager:
         mark_order_confirmed(order_id, int(time.time()))
 
         send_admin_notification(
-            f"✅ Аренда подтверждена\n"
-            f"Клиент: {buyer_name}\n"
-            f"Заказ: #{order_id}\n"
+            f"✅ Аренда подтверждена"
+            f"Клиент: {buyer_name}"
+            f"Заказ: #{order_id}"
             f"Чат: {chat_link}"
         )
 
@@ -268,7 +277,7 @@ class RentalManager:
                 try:
                     self.acc.send_message(
                         chat_id,
-                        f"⛔ Заказ #{order_id}: время аренды завершено.\n"
+                        f"⛔ Заказ #{order_id}: время аренды завершено."
                         "Пожалуйста, покиньте аккаунт и подтвердите лот."
                     )
                     mark_ended_msg(order_id)
@@ -294,13 +303,13 @@ class RentalManager:
 
                     chat_link = f"https://funpay.com/chat/?node={chat_id}"
                     send_admin_notification(
-                        f"⛔ Аренда закрыта автоматически без подтверждения\n"
-                        f"Клиент: {buyer_name}\n"
-                        f"Заказ: #{order_id}\n"
-                        f"good_id: {rental['good_id']}\n"
-                        f"Маркер: {rental['marker']}\n"
-                        f"Логин аккаунта: {rental['login']}\n"
-                        f"Статус: аккаунт возвращён в пул, лот переведён в 'Свободен!'\n"
+                        f"⛔ Аренда закрыта автоматически без подтверждения"
+                        f"Клиент: {buyer_name}"
+                        f"Заказ: #{order_id}"
+                        f"good_id: {rental['good_id']}"
+                        f"Маркер: {rental['marker']}"
+                        f"Логин аккаунта: {rental['login']}"
+                        f"Статус: аккаунт возвращён в пул, лот переведён в 'Свободен!'"
                         f"Чат: {chat_link}"
                     )
                 except Exception as e:
