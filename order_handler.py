@@ -7,6 +7,7 @@ import time
 from storage import (
     get_rental_by_order_id,
     get_active_rental_by_buyer_and_marker,
+    get_good_by_marker,
     log_order_event,
 )
 from tg_notify import send_admin_notification
@@ -20,8 +21,70 @@ def extract_order_id(text: str) -> str | None:
 
 
 def extract_hours(text: str) -> int | None:
-    match = re.search(r"(\d+)\s*шт", text.lower())
-    return int(match.group(1)) if match else None
+    low = text.lower()
+
+    patterns = [
+        r"(\d+)\s*шт",
+        r"аренда\s*[,:-]?\s*(\d+)\s*ч",
+        r"на\s*(\d+)\s*ч(?:ас|\.)?",
+        r"(\d+)\s*ч(?:ас|\.)",
+        r"аренда\s*[,:-]?\s*(\d+)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, low)
+        if match:
+            return int(match.group(1))
+
+    # На FunPay покупка одной единицы часто приходит без "1 шт".
+    # Для наших лотов 1 единица = 1 час аренды.
+    if extract_marker(text):
+        return 1
+
+    return None
+
+
+def extract_min_hours(title: str) -> int | None:
+    if not title:
+        return None
+
+    patterns = [
+        r"от\s*(\d+)\s*час",
+        r"от\s*(\d+)\s*ч",
+        r"min\s*(\d+)\s*h",
+    ]
+
+    low = title.lower()
+    for pattern in patterns:
+        match = re.search(pattern, low)
+        if match:
+            return int(match.group(1))
+
+    return None
+
+
+def build_min_hours_message(marker: str, good, min_hours: int) -> str:
+    lines = [
+        f"❌ Минимальная аренда для этого аккаунта — от {min_hours} ч.",
+        f"Сейчас в заказе указано меньше: доплатите ещё минимум до {min_hours} ч. и оформите заказ заново.",
+    ]
+
+    lot_id = None
+    try:
+        lot_id = good["lot_id"]
+    except Exception:
+        lot_id = None
+
+    if lot_id:
+        lines.extend([
+            "",
+            "Оплатить можно по этому лоту:",
+            f"https://funpay.com/lots/offer?id={lot_id}",
+        ])
+    elif marker:
+        lines.append(f"\nМаркер товара: {marker}")
+
+    return "\n".join(lines)
 
 
 def extract_marker(text: str) -> str | None:
@@ -47,14 +110,24 @@ def handle_paid_order_message(acc, rm, chat_id: int | str, text: str):
         LOGGER.info("Заказ %s уже обработан", order_id)
         return
 
+    marker = extract_marker(text)
+    if not marker:
+        acc.send_message(chat_id, "❌ Не удалось определить маркер товара (#1, #2 и т.д.).")
+        return
+
+    good = get_good_by_marker(marker)
+    if not good:
+        acc.send_message(chat_id, f"❌ В базе не найден товар для маркера {marker}")
+        return
+
     hours = extract_hours(text)
     if not hours:
         acc.send_message(chat_id, "❌ Не удалось определить количество часов по заказу.")
         return
 
-    marker = extract_marker(text)
-    if not marker:
-        acc.send_message(chat_id, "❌ Не удалось определить маркер товара (#1, #2 и т.д.).")
+    min_hours = extract_min_hours(good["title"])
+    if min_hours and hours < min_hours:
+        acc.send_message(chat_id, build_min_hours_message(marker, good, min_hours))
         return
 
     msg = acc.get_chat_history(chat_id, interlocutor_username=None, from_id=0)
