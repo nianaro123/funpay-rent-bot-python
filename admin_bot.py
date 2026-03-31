@@ -5,7 +5,7 @@ import re
 import time
 
 from FunPayAPI import Account
-from telegram import Update
+from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -51,6 +51,23 @@ EDIT_GOOD_ID, EDIT_LOT_LINK, EDIT_LOGIN, EDIT_PASSWORD, EDIT_NOTE, EDIT_SHARED_S
 
 FUNPAY_ACC = None
 
+BTN_ADD_GOOD = "➕ Add Good"
+BTN_EDIT_GOOD = "✏️ Edit Good"
+BTN_LIST_GOODS = "📦 List Goods"
+BTN_ACTIVE_RENTALS = "📊 Active Rentals"
+BTN_FREE_GOODS = "🟢 Free Goods"
+BTN_STATS = "💰 Stats"
+
+
+def get_main_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [BTN_ADD_GOOD, BTN_EDIT_GOOD],
+            [BTN_LIST_GOODS, BTN_ACTIVE_RENTALS],
+            [BTN_FREE_GOODS, BTN_STATS],
+        ],
+        resize_keyboard=True,
+    )
 
 
 def parse_lot_id_from_input(value: str) -> int | None:
@@ -70,14 +87,14 @@ def parse_lot_id_from_input(value: str) -> int | None:
 
 def fetch_lot_title(lot_id: int) -> str:
     if FUNPAY_ACC is None:
-        raise RuntimeError("FunPay аккаунт не инициализирован в admin_bot.py")
+        raise RuntimeError("FunPay account is not initialized in admin_bot.py")
 
     manager = LotManager(FUNPAY_ACC)
     ru, en = manager.get_summary_fields(lot_id)
 
     title = (ru or "").strip() or (en or "").strip()
     if not title:
-        raise RuntimeError("Не удалось получить title лота с FunPay")
+        raise RuntimeError("Failed to fetch lot title from FunPay")
 
     return title
 
@@ -140,6 +157,13 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = (
         "Админ-бот запущен.\n\n"
+        "Кнопки:\n"
+        f"{BTN_ADD_GOOD} — добавить товар\n"
+        f"{BTN_EDIT_GOOD} — редактировать товар\n"
+        f"{BTN_LIST_GOODS} — список товаров\n"
+        f"{BTN_ACTIVE_RENTALS} — активные аренды\n"
+        f"{BTN_FREE_GOODS} — число свободных товаров\n"
+        f"{BTN_STATS} — статистика за всё время\n\n"
         "Команды:\n"
         "/goods — список товаров\n"
         "/free — число свободных товаров\n"
@@ -154,12 +178,38 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/stats day|week|month|all — доход по подтверждённым заказам\n"
         "/cancel — отменить текущий мастер"
     )
-    await update.message.reply_text(text)
+    await update.message.reply_text(text, reply_markup=get_main_keyboard())
+
+
+async def admin_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    text = (update.message.text or "").strip()
+
+    if text == BTN_ADD_GOOD:
+        return await addgood_start(update, context)
+
+    if text == BTN_EDIT_GOOD:
+        return await editgood_start(update, context)
+
+    if text == BTN_LIST_GOODS:
+        return await goods_cmd(update, context)
+
+    if text == BTN_ACTIVE_RENTALS:
+        return await rentals_cmd(update, context)
+
+    if text == BTN_FREE_GOODS:
+        return await free_cmd(update, context)
+
+    if text == BTN_STATS:
+        context.args = ["all"]
+        return await stats_cmd(update, context)
 
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    await update.message.reply_text("Операция отменена.")
+    await update.message.reply_text("Операция отменена.", reply_markup=get_main_keyboard())
     return ConversationHandler.END
 
 
@@ -364,7 +414,7 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     period = "day"
-    if context.args:
+    if getattr(context, "args", None):
         period = context.args[0].lower()
 
     now = int(time.time())
@@ -410,7 +460,6 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- ADDGOOD WIZARD ----------
 
-
 async def addgood_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await admin_only(update):
         return ConversationHandler.END
@@ -421,7 +470,6 @@ async def addgood_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Пример: https://funpay.com/lots/offer?id=61816431"
     )
     return ADD_LOT_LINK
-
 
 
 async def addgood_lot_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -474,12 +522,13 @@ async def addgood_note_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ADD_SHARED_SECRET
 
 
-async def addgood_shared_secret(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["shared_secret"] = update.message.text.strip()
+async def finish_addgood(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lot_id = context.user_data["lot_id"]
+    title = context.user_data["title"]
 
     good_id = add_good(
-        lot_id=context.user_data["lot_id"],
-        title=context.user_data["title"],
+        lot_id=lot_id,
+        title=title,
         login=context.user_data["login"],
         password=context.user_data["password"],
         note=context.user_data.get("note", ""),
@@ -487,29 +536,24 @@ async def addgood_shared_secret(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
     context.user_data.clear()
-    lot_id = context.user_data["lot_id"]
-    title = context.user_data["title"]
-    await update.message.reply_text(f"✅ Товар добавлен. good_id={good_id}\nlot_id={lot_id}\ntitle={title}")
+    await update.message.reply_text(
+        f"✅ Товар добавлен.\n"
+        f"good_id={good_id}\n"
+        f"lot_id={lot_id}\n"
+        f"title={title}",
+        reply_markup=get_main_keyboard(),
+    )
     return ConversationHandler.END
+
+
+async def addgood_shared_secret(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["shared_secret"] = update.message.text.strip()
+    return await finish_addgood(update, context)
 
 
 async def addgood_shared_secret_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["shared_secret"] = ""
-
-    good_id = add_good(
-        lot_id=context.user_data["lot_id"],
-        title=context.user_data["title"],
-        login=context.user_data["login"],
-        password=context.user_data["password"],
-        note=context.user_data.get("note", ""),
-        shared_secret=context.user_data.get("shared_secret", ""),
-    )
-
-    context.user_data.clear()
-    lot_id = context.user_data["lot_id"]
-    title = context.user_data["title"]
-    await update.message.reply_text(f"✅ Товар добавлен. good_id={good_id}\nlot_id={lot_id}\ntitle={title}")
-    return ConversationHandler.END
+    return await finish_addgood(update, context)
 
 
 # ---------- EDITGOOD WIZARD ----------
@@ -546,7 +590,6 @@ async def editgood_good_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return EDIT_LOT_LINK
 
 
-
 async def editgood_lot_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lot_input = update.message.text.strip()
     lot_id = parse_lot_id_from_input(lot_input)
@@ -574,7 +617,6 @@ async def editgood_lot_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Введите новый login или /skip:"
     )
     return EDIT_LOGIN
-
 
 
 async def editgood_lot_link_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -639,9 +681,7 @@ async def editgood_note_skip(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return EDIT_SHARED_SECRET
 
 
-async def editgood_shared_secret(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["shared_secret"] = update.message.text.strip()
-
+async def finish_editgood(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ok = update_good(
         good_id=context.user_data["good_id"],
         lot_id=context.user_data.get("lot_id"),
@@ -654,31 +694,20 @@ async def editgood_shared_secret(update: Update, context: ContextTypes.DEFAULT_T
 
     context.user_data.clear()
     if ok:
-        await update.message.reply_text("✅ Товар обновлён.")
+        await update.message.reply_text("✅ Товар обновлён.", reply_markup=get_main_keyboard())
     else:
-        await update.message.reply_text("❌ Не удалось обновить товар.")
+        await update.message.reply_text("❌ Не удалось обновить товар.", reply_markup=get_main_keyboard())
     return ConversationHandler.END
+
+
+async def editgood_shared_secret(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["shared_secret"] = update.message.text.strip()
+    return await finish_editgood(update, context)
 
 
 async def editgood_shared_secret_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["shared_secret"] = None
-
-    ok = update_good(
-        good_id=context.user_data["good_id"],
-        lot_id=context.user_data.get("lot_id"),
-        title=context.user_data.get("title"),
-        login=context.user_data.get("login"),
-        password=context.user_data.get("password"),
-        note=context.user_data.get("note"),
-        shared_secret=context.user_data.get("shared_secret"),
-    )
-
-    context.user_data.clear()
-    if ok:
-        await update.message.reply_text("✅ Товар обновлён.")
-    else:
-        await update.message.reply_text("❌ Не удалось обновить товар.")
-    return ConversationHandler.END
+    return await finish_editgood(update, context)
 
 
 # ---------- SIMPLE COMMANDS ----------
@@ -813,6 +842,18 @@ def main():
     app.add_handler(CommandHandler("enablegood", enablegood_cmd))
     app.add_handler(CommandHandler("delgood", delgood_cmd))
     app.add_handler(CommandHandler("cancel", cancel_cmd))
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT
+            & ~filters.COMMAND
+            & filters.Regex(
+                f"^({re.escape(BTN_ADD_GOOD)}|{re.escape(BTN_EDIT_GOOD)}|"
+                f"{re.escape(BTN_LIST_GOODS)}|{re.escape(BTN_ACTIVE_RENTALS)}|"
+                f"{re.escape(BTN_FREE_GOODS)}|{re.escape(BTN_STATS)})$"
+            ),
+            admin_menu_text,
+        )
+    )
 
     print("Telegram admin bot started")
     app.run_polling()
