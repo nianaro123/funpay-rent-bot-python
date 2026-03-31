@@ -207,6 +207,24 @@ async def admin_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await stats_cmd(update, context)
 
 
+
+
+async def addgood_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await addgood_start(update, context)
+
+
+async def editgood_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await editgood_start(update, context)
+
+
+async def free_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await free_cmd(update, context)
+
+
+async def stats_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.args = ["all"]
+    return await stats_cmd(update, context)
+
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text("Операция отменена.", reply_markup=get_main_keyboard())
@@ -784,7 +802,10 @@ def main():
     app = Application.builder().token(TELEGRAM_ADMIN_BOT_TOKEN).build()
 
     addgood_conv = ConversationHandler(
-        entry_points=[CommandHandler("addgood", addgood_start)],
+        entry_points=[
+            CommandHandler("addgood", addgood_start),
+            MessageHandler(filters.Regex(f"^{re.escape(BTN_ADD_GOOD)}$"), addgood_button),
+        ],
         states={
             ADD_LOT_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, addgood_lot_link)],
             ADD_LOGIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, addgood_login)],
@@ -802,7 +823,10 @@ def main():
     )
 
     editgood_conv = ConversationHandler(
-        entry_points=[CommandHandler("editgood", editgood_start)],
+        entry_points=[
+            CommandHandler("editgood", editgood_start),
+            MessageHandler(filters.Regex(f"^{re.escape(BTN_EDIT_GOOD)}$"), editgood_button),
+        ],
         states={
             EDIT_GOOD_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, editgood_good_id)],
             EDIT_LOT_LINK: [
@@ -842,18 +866,10 @@ def main():
     app.add_handler(CommandHandler("enablegood", enablegood_cmd))
     app.add_handler(CommandHandler("delgood", delgood_cmd))
     app.add_handler(CommandHandler("cancel", cancel_cmd))
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT
-            & ~filters.COMMAND
-            & filters.Regex(
-                f"^({re.escape(BTN_ADD_GOOD)}|{re.escape(BTN_EDIT_GOOD)}|"
-                f"{re.escape(BTN_LIST_GOODS)}|{re.escape(BTN_ACTIVE_RENTALS)}|"
-                f"{re.escape(BTN_FREE_GOODS)}|{re.escape(BTN_STATS)})$"
-            ),
-            admin_menu_text,
-        )
-    )
+    app.add_handler(MessageHandler(filters.Regex(f"^{re.escape(BTN_LIST_GOODS)}$"), goods_cmd))
+    app.add_handler(MessageHandler(filters.Regex(f"^{re.escape(BTN_ACTIVE_RENTALS)}$"), rentals_cmd))
+    app.add_handler(MessageHandler(filters.Regex(f"^{re.escape(BTN_FREE_GOODS)}$"), free_button))
+    app.add_handler(MessageHandler(filters.Regex(f"^{re.escape(BTN_STATS)}$"), stats_button))
 
     print("Telegram admin bot started")
     app.run_polling()
