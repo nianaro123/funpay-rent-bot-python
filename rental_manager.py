@@ -57,6 +57,73 @@ class RentalManager:
             return f"{hours} ч. {minutes} мин."
         return f"{minutes} мин."
 
+    def _format_datetime(self, ts: int) -> str:
+        return time.strftime("%d.%m %H:%M", time.localtime(ts))
+
+    def _format_issue_message(self, good, order_id: str, hours: int, steam_guard_code: str | None) -> str:
+        paid_end_ts = int(time.time()) + hours * 3600
+        lot_id = good["lot_id"]
+        lot_url = f"https://funpay.com/lots/offer?id={lot_id}" if lot_id else None
+
+        lines = [
+            "🎉 Заказ успешно оформлен!",
+            f"Номер заказа: #{order_id}",
+            "",
+            "🔐 Данные для входа:",
+            f"• Логин: {good['login']}",
+            f"• Пароль: {good['password']}",
+            f"• Steam Guard: {steam_guard_code if steam_guard_code else 'не задан'}",
+            "",
+            "⏳ Информация по аренде:",
+            f"• Оплачено времени: {hours} ч.",
+            f"• Аккаунт доступен до: {self._format_datetime(paid_end_ts)}",
+            "• За 10 минут до окончания я пришлю напоминание.",
+        ]
+
+        if lot_url:
+            lines.extend([
+                "",
+                "🔄 Хотите продлить аренду?",
+                "Оплачивайте продление по этой ссылке:",
+                lot_url,
+            ])
+
+        lines.extend([
+            "",
+            "💬 Если возникнут вопросы, напишите /help — я подскажу доступные команды.",
+            "⭐ Если всё понравится, буду рад вашему отзыву — за него предусмотрен бонус.",
+        ])
+        return "\n".join(lines)
+
+    def _format_review_bonus_message(self, rental) -> str:
+        return "\n".join([
+            "⭐ Спасибо за отзыв! Вы получили 1 час бонусного времени!",
+            f"Текущее время аренды заказа #{rental['order_id']}: {self.get_remaining_time(rental)}.",
+            "",
+            "Приятной игры! Если захотите продлить аренду, просто оплатите тот же лот.",
+        ])
+
+    def _format_warning_message(self, order_id: str, rental) -> str:
+        return "\n".join([
+            f"⏰ Напоминание по заказу #{order_id}",
+            "До окончания аренды осталось около 10 минут.",
+            "Если хотите продолжить пользоваться аккаунтом, оплатите продление заранее.",
+        ])
+
+    def _format_end_message(self, order_id: str) -> str:
+        return "\n".join([
+            f"⛔ Время аренды по заказу #{order_id} завершено.",
+            "Пожалуйста, выйдите из аккаунта и подтвердите выполнение заказа на FunPay.",
+            "Спасибо, что воспользовались арендой 🤝",
+        ])
+
+    def _format_refund_message(self, order_id: str) -> str:
+        return "\n".join([
+            f"ℹ️ По заказу #{order_id} зафиксирован возврат средств.",
+            "Аренда закрыта, аккаунт снова доступен для аренды.",
+            "Если захотите оформить заказ позже — буду рад помочь снова.",
+        ])
+
     def issue_specific_good(
         self,
         order_id: str,
@@ -107,34 +174,15 @@ class RentalManager:
             return None
 
         steam_guard_code = generate_steam_guard_code(good["shared_secret"])
-
-        lines = [
-            "✅ Данные для входа:",
-            f"Логин: {good['login']}",
-            f"Пароль: {good['password']}",
-        ]
-
-        if steam_guard_code:
-            lines.append(f"Steam Guard код: {steam_guard_code}")
-        else:
-            lines.append("Steam Guard код: не задан")
-
-        lines.extend([
-            "",
-            f"⏱ Время аренды: {hours} ч.",
-            "⚠️ За 10 минут до окончания аренды я отправлю предупреждение.",
-        ])
-
-        lot_id = good["lot_id"]
-        if lot_id:
-            lot_url = f"https://funpay.com/lots/offer?id={lot_id}"
-            lines.extend([
-                "",
-                "🔄 При желании продлить аренду для этого аккаунта, оплачивайте этот лот:",
-                lot_url,
-            ])
-
-        self.acc.send_message(chat_id, "".join(lines))
+        self.acc.send_message(
+            chat_id,
+            self._format_issue_message(
+                good=good,
+                order_id=order_id,
+                hours=hours,
+                steam_guard_code=steam_guard_code,
+            ),
+        )
 
         try:
             if good["lot_id"]:
@@ -169,10 +217,31 @@ class RentalManager:
         return True
 
     def handle_review_notice(self, chat_id: int | str, text: str) -> None:
-        self.acc.send_message(
-            chat_id,
-            "⭐ Спасибо за отзыв! Функция бонусного продления будет подключена следующим шагом."
-        )
+        match = re.search(r"#([A-Z0-9]+)", text)
+        if not match:
+            LOGGER.warning("Не удалось извлечь order_id из сообщения об отзыве: %s", text)
+            return
+
+        order_id = match.group(1)
+        rental = get_rental_by_order_id(order_id)
+        if not rental or rental["closed"]:
+            LOGGER.info("Для отзыва order_id=%s активная аренда не найдена", order_id)
+            return
+
+        if rental["bonus_applied"]:
+            self.acc.send_message(
+                chat_id,
+                f"ℹ️ По заказу #{order_id} бонус за отзыв уже был начислен."
+            )
+            return
+
+        extend_rental(order_id, self.REVIEW_BONUS_SECONDS)
+        set_bonus_applied(order_id)
+        add_extension(rental["id"], "review_bonus", 1, int(time.time()))
+
+        rental = get_rental_by_order_id(order_id)
+        self.acc.send_message(chat_id, self._format_review_bonus_message(rental))
+        LOGGER.info("Бонус за отзыв применён для order_id=%s", order_id)
 
     def handle_refund_notice(self, chat_id: int | str, text: str) -> None:
         match = re.search(r"#([A-Z0-9]+)", text)
@@ -212,11 +281,7 @@ class RentalManager:
             return
 
         try:
-            self.acc.send_message(
-                chat_id,
-                f"ℹ️ Заказ #{order_id}: возврат средств зафиксирован. "
-                "Аренда закрыта, аккаунт снова доступен для аренды."
-            )
+            self.acc.send_message(chat_id, self._format_refund_message(order_id))
         except Exception as e:
             LOGGER.exception("Не удалось отправить сообщение после возврата order_id=%s: %s", order_id, e)
 
@@ -230,10 +295,12 @@ class RentalManager:
         mark_order_confirmed(order_id, int(time.time()))
 
         send_admin_notification(
-            f"✅ Аренда подтверждена"
-            f"Клиент: {buyer_name}"
-            f"Заказ: #{order_id}"
-            f"Чат: {chat_link}"
+            "\n".join([
+                "✅ Аренда подтверждена",
+                f"Клиент: {buyer_name}",
+                f"Заказ: #{order_id}",
+                f"Чат: {chat_link}",
+            ])
         )
 
     def apply_review_bonus(self, buyer_id: int, chat_id: int | str) -> bool:
@@ -249,7 +316,8 @@ class RentalManager:
         set_bonus_applied(rental["order_id"])
         add_extension(rental["id"], "review_bonus", 1, int(time.time()))
 
-        self.acc.send_message(chat_id, "⭐ Спасибо за отзыв! Аренда продлена на 1 час.")
+        rental = get_rental_by_order_id(rental["order_id"])
+        self.acc.send_message(chat_id, self._format_review_bonus_message(rental))
         LOGGER.info("Бонус за отзыв применён для order_id=%s", rental["order_id"])
         return True
 
@@ -267,7 +335,7 @@ class RentalManager:
                 try:
                     self.acc.send_message(
                         chat_id,
-                        f"⚠️ Заказ #{order_id}: до окончания аренды осталось 10 минут."
+                        self._format_warning_message(order_id, rental),
                     )
                     mark_warned(order_id)
                 except Exception as e:
@@ -277,8 +345,7 @@ class RentalManager:
                 try:
                     self.acc.send_message(
                         chat_id,
-                        f"⛔ Заказ #{order_id}: время аренды завершено."
-                        "Пожалуйста, покиньте аккаунт и подтвердите лот."
+                        self._format_end_message(order_id),
                     )
                     mark_ended_msg(order_id)
                 except Exception as e:
@@ -303,14 +370,16 @@ class RentalManager:
 
                     chat_link = f"https://funpay.com/chat/?node={chat_id}"
                     send_admin_notification(
-                        f"⛔ Аренда закрыта автоматически без подтверждения"
-                        f"Клиент: {buyer_name}"
-                        f"Заказ: #{order_id}"
-                        f"good_id: {rental['good_id']}"
-                        f"Маркер: {rental['marker']}"
-                        f"Логин аккаунта: {rental['login']}"
-                        f"Статус: аккаунт возвращён в пул, лот переведён в 'Свободен!'"
-                        f"Чат: {chat_link}"
+                        "\n".join([
+                            "⛔ Аренда закрыта автоматически без подтверждения",
+                            f"Клиент: {buyer_name}",
+                            f"Заказ: #{order_id}",
+                            f"good_id: {rental['good_id']}",
+                            f"Маркер: {rental['marker']}",
+                            f"Логин аккаунта: {rental['login']}",
+                            "Статус: аккаунт возвращён в пул, лот переведён в 'Свободен!'",
+                            f"Чат: {chat_link}",
+                        ])
                     )
                 except Exception as e:
                     LOGGER.exception("Ошибка закрытия аренды order_id=%s: %s", order_id, e)
