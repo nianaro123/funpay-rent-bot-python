@@ -30,7 +30,7 @@ LOGGER = logging.getLogger(__name__)
 
 class RentalManager:
     WARNING_SECONDS = 10 * 60
-    GRACE_SECONDS = 15 * 60
+    GRACE_SECONDS = 10 * 60
     REVIEW_BONUS_SECONDS = 60 * 60
 
     def __init__(self, acc):
@@ -114,6 +114,7 @@ class RentalManager:
         return "\n".join([
             f"⛔ Время аренды по заказу #{order_id} завершено.",
             "Пожалуйста, выйдите из аккаунта и подтвердите выполнение заказа на FunPay.",
+            "Через 10 минут вы будете автоматически разлогинены из аккаунта.",
             "Спасибо, что воспользовались арендой 🤝",
         ])
 
