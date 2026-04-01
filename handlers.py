@@ -1,5 +1,3 @@
-# handlers.py
-
 import time
 
 from FunPayAPI.updater.events import NewMessageEvent
@@ -21,7 +19,7 @@ from tg_notify import send_admin_notification
 
 
 class AutoReplyBot:
-    ADMIN_REQUEST_COOLDOWN = 5 * 60  # 5 минут
+    ADMIN_REQUEST_COOLDOWN = 5 * 60
 
     def __init__(self, acc):
         self.acc = acc
@@ -44,15 +42,12 @@ class AutoReplyBot:
             return
 
         try:
-            # Игнорируем сообщения, которые отправил сам бот
             if getattr(msg, "by_bot", False):
                 return
 
-            # Игнорируем свои собственные сообщения продавца
             if author_id == self.acc.id:
                 return
 
-            # Системные сообщения FunPay
             if author_id == 0:
                 low = text.lower()
 
@@ -74,12 +69,10 @@ class AutoReplyBot:
 
                 return
 
-            # Команды клиента
             if text.startswith("/"):
                 self.handle_command(chat_id, text, author_id, author)
                 return
 
-            # Приветствие клиента только один раз даже после рестарта
             if not is_chat_welcomed(str(chat_id)):
                 self.acc.send_message(chat_id, WELCOME_TEXT)
                 mark_chat_welcomed(str(chat_id))
@@ -132,16 +125,11 @@ class AutoReplyBot:
             if cooldown_left > 0:
                 minutes = cooldown_left // 60
                 seconds = cooldown_left % 60
-
-                if minutes > 0:
-                    wait_text = f"{minutes} мин. {seconds} сек."
-                else:
-                    wait_text = f"{seconds} сек."
+                wait_text = f"{minutes} мин. {seconds} сек." if minutes > 0 else f"{seconds} сек."
 
                 self.acc.send_message(
                     chat_id,
-                    f"⏳ Вы уже отправляли запрос продавцу недавно. "
-                    f"Повторно можно вызвать через {wait_text}"
+                    f"⏳ Вы уже отправляли запрос продавцу недавно. Повторно можно вызвать через {wait_text}"
                 )
                 return
 
@@ -149,8 +137,8 @@ class AutoReplyBot:
             chat_link = f"https://funpay.com/chat/?node={chat_id}"
 
             notify_text = (
-                f"Клиент {username} отправил запрос на диалог с вами."
-                f"Ссылка на чат:{chat_link}"
+                f"Клиент {username} отправил запрос на диалог с вами.\n"
+                f"Ссылка на чат: {chat_link}"
             )
 
             ok = send_admin_notification(notify_text)
@@ -176,44 +164,45 @@ class AutoReplyBot:
 
         if cmd == "/acc":
             if not rentals:
-                self.acc.send_message(chat_id, "У вас нет активных аренд")
+                self.acc.send_message(chat_id, "У вас нет активных аренд.")
                 return
 
-            lines = ["📄 Ваши активные аренды:"]
+            lines = ["📄 Ваши активные аренды:", ""]
             for i, rental in enumerate(rentals, start=1):
-                lines.append(
-                    f"{i}. {rental['title']}"
-                    f"Логин: {rental['login']}"
-                    f"Пароль: {rental['password']}"
-                )
-            self.acc.send_message(chat_id, "".join(lines))
+                lines.extend([
+                    f"{i}. {rental['title']}",
+                    f"Логин: {rental['login']}",
+                    f"Пароль: {rental['password']}",
+                    "",
+                ])
+            self.acc.send_message(chat_id, "\n".join(lines).strip())
             return
 
         if cmd == "/code":
             if not rentals:
-                self.acc.send_message(chat_id, "У вас нет активных аренд")
+                self.acc.send_message(chat_id, "У вас нет активных аренд.")
                 return
 
-            lines = ["🔑 Ваши Steam Guard коды:"]
+            lines = ["🔑 Ваши Steam Guard коды:", ""]
             for i, rental in enumerate(rentals, start=1):
                 code = generate_steam_guard_code(rental["shared_secret"])
                 if code:
                     lines.append(f"{i}. {rental['login']} — код: {code}")
                 else:
                     lines.append(f"{i}. {rental['login']} — shared_secret не задан")
-            self.acc.send_message(chat_id, "".join(lines))
+            self.acc.send_message(chat_id, "\n".join(lines))
             return
 
         if cmd == "/time":
             if not rentals:
-                self.acc.send_message(chat_id, "У вас нет активных аренд")
+                self.acc.send_message(chat_id, "У вас нет активных аренд.")
                 return
 
-            lines = ["⏱ Ваши активные аренды:"]
+            lines = ["⏱ Ваши активные аренды:", ""]
             for i, rental in enumerate(rentals, start=1):
                 remaining = self.rm.get_remaining_time(rental)
                 lines.append(f"{i}. {rental['title']} — осталось: {remaining}")
-            self.acc.send_message(chat_id, "".join(lines))
+            self.acc.send_message(chat_id, "\n".join(lines))
             return
 
         self.acc.send_message(chat_id, "Неизвестная команда. Напишите /help")
