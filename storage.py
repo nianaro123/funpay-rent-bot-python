@@ -1,5 +1,3 @@
-# storage.py
-
 import re
 import sqlite3
 
@@ -30,14 +28,16 @@ def ensure_goods_columns(conn):
 
     rows = conn.execute("SELECT id, title, marker FROM goods").fetchall()
     for row in rows:
-        current_marker = row["marker"] or ""
-        if current_marker.strip():
-            continue
-        marker = extract_marker_from_title(row["title"] or "")
-        if marker:
+        extracted_marker = extract_marker_from_title(row["title"] or "")
+        current_marker = (row["marker"] or "").strip()
+
+        # ВАЖНО:
+        # синхронизируем marker с title не только когда marker пустой,
+        # но и когда он устарел после редактирования title.
+        if extracted_marker and current_marker != extracted_marker:
             conn.execute(
                 "UPDATE goods SET marker = ? WHERE id = ?",
-                (marker, row["id"])
+                (extracted_marker, row["id"])
             )
 
 
@@ -216,15 +216,21 @@ def update_good(
     new_note = current["note"] if note is None else note
     new_shared_secret = current["shared_secret"] if shared_secret is None else shared_secret
 
+    # Если marker явно не передан:
+    # - при изменении title пересчитываем marker из нового title
+    # - если title не менялся, сохраняем текущий marker
     if marker is None:
-        new_marker = current["marker"]
+        if title is not None and new_title != current["title"]:
+            new_marker = extract_marker_from_title(new_title)
+        else:
+            new_marker = (current["marker"] or "").strip()
+
         if not new_marker:
             new_marker = extract_marker_from_title(new_title)
     else:
         new_marker = marker.strip()
-
-    if not new_marker:
-        new_marker = extract_marker_from_title(new_title)
+        if not new_marker:
+            new_marker = extract_marker_from_title(new_title)
 
     conn = get_connection()
     cur = conn.cursor()
@@ -314,6 +320,7 @@ def get_good_by_marker(marker: str):
                 FROM rentals
                 WHERE closed = 0
           )
+        ORDER BY id ASC
         LIMIT 1
     """, (marker,)).fetchone()
     conn.close()

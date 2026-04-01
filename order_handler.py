@@ -1,8 +1,13 @@
-#order_handler.py
 import logging
 import re
 import time
 
+from order_utils import (
+    get_order_html,
+    extract_hours_from_order_html,
+    extract_short_description_from_order_html,
+    extract_good_marker,
+)
 from storage import (
     get_connection,
     get_rental_by_order_id,
@@ -12,7 +17,6 @@ from storage import (
 from tg_notify import send_admin_notification
 
 LOGGER = logging.getLogger(__name__)
-
 
 UNDER_MIN_KIND = "under_minimum"
 UNDER_MIN_PENDING = "pending"
@@ -24,26 +28,21 @@ def extract_order_id(text: str) -> str | None:
     return match.group(1) if match else None
 
 
-
-def extract_hours(text: str) -> int | None:
+def extract_hours_from_text(text: str) -> int | None:
     lowered = text.lower()
     match = re.search(r"(\d+)\s*шт", lowered)
     if match:
         return int(match.group(1))
 
-    # FunPay нередко не пишет "1 шт" для единичной покупки аренды.
-    # В таком случае считаем это заказом на 1 час.
     if "аренда" in lowered:
         return 1
 
     return None
 
 
-
-def extract_marker(text: str) -> str | None:
+def extract_marker_from_text(text: str) -> str | None:
     match = re.search(r"(#\d+)", text)
     return match.group(1) if match else None
-
 
 
 def extract_min_hours(title: str | None) -> int:
@@ -68,14 +67,12 @@ def extract_min_hours(title: str | None) -> int:
     return 1
 
 
-
 def get_order_amount_rub(acc, order_id: str) -> float:
     try:
         order = acc.get_order(order_id)
         return float(order.sum) if order and order.sum is not None else 0.0
     except Exception:
         return 0.0
-
 
 
 def get_good_snapshot_by_marker(marker: str):
@@ -97,7 +94,6 @@ def get_good_snapshot_by_marker(marker: str):
         conn.close()
 
 
-
 def get_order_event(order_id: str):
     conn = get_connection()
     try:
@@ -113,7 +109,6 @@ def get_order_event(order_id: str):
         return row
     finally:
         conn.close()
-
 
 
 def get_pending_under_minimum_hours(buyer_id: int, marker: str) -> int:
@@ -135,7 +130,6 @@ def get_pending_under_minimum_hours(buyer_id: int, marker: str) -> int:
         conn.close()
 
 
-
 def mark_pending_under_minimum_applied(buyer_id: int, marker: str, applied_ts: int) -> None:
     conn = get_connection()
     try:
@@ -153,7 +147,6 @@ def mark_pending_under_minimum_applied(buyer_id: int, marker: str, applied_ts: i
         conn.commit()
     finally:
         conn.close()
-
 
 
 def build_min_hours_message(min_hours: int, total_hours: int, lot_id: int | None) -> str:
@@ -178,6 +171,26 @@ def build_min_hours_message(min_hours: int, total_hours: int, lot_id: int | None
     return "\n".join(lines)
 
 
+def resolve_order_meta(acc, order_id: str, text: str) -> tuple[str | None, int | None]:
+    marker = None
+    hours = None
+
+    try:
+        html = get_order_html(acc, order_id)
+        short_description = extract_short_description_from_order_html(html)
+        marker = extract_good_marker(short_description)
+        hours = extract_hours_from_order_html(html)
+    except Exception as e:
+        LOGGER.warning("Не удалось разобрать страницу заказа %s, fallback на текст: %s", order_id, e)
+
+    if not marker:
+        marker = extract_marker_from_text(text)
+
+    if not hours:
+        hours = extract_hours_from_text(text)
+
+    return marker, hours
+
 
 def handle_paid_order_message(acc, rm, chat_id: int | str, text: str):
     order_id = extract_order_id(text)
@@ -191,15 +204,20 @@ def handle_paid_order_message(acc, rm, chat_id: int | str, text: str):
 
     existing_event = get_order_event(order_id)
     if existing_event:
-        LOGGER.info("Заказ %s уже обработан как событие kind=%s status=%s", order_id, existing_event["kind"], existing_event["status"])
+        LOGGER.info(
+            "Заказ %s уже обработан как событие kind=%s status=%s",
+            order_id,
+            existing_event["kind"],
+            existing_event["status"],
+        )
         return
 
-    marker = extract_marker(text)
+    marker, hours = resolve_order_meta(acc, order_id, text)
+
     if not marker:
         acc.send_message(chat_id, "❌ Не удалось определить маркер товара (#1, #2 и т.д.).")
         return
 
-    hours = extract_hours(text)
     if not hours:
         acc.send_message(chat_id, "❌ Не удалось определить количество часов по заказу.")
         return
