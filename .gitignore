@@ -1,11 +1,34 @@
-venv/
+# Python
 __pycache__/
-.idea/
-*.pyc
-rent_bot.sqlite3
-order_debug.html
+*.py[cod]
+*.pyo
+*.pyd
+*.log
+.venv/
+venv/
+env/
+
+# SQLite / local data
+*.sqlite3
+*.db
+
+# Secrets / local config
+.env
 config.py
-goods.json
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node worker
 steam_sign_out_worker/node_modules/
 steam_sign_out_worker/npm-debug.log
 steam_sign_out_worker/.env
+
+# Temporary/debug
+order_debug.html
+steam_debug/
