@@ -1,3 +1,4 @@
+#steam_session_worker.py
 import json
 import logging
 import os

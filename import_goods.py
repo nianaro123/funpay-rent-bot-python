@@ -1,3 +1,4 @@
+#import_goods.py
 import json
 from storage import init_db, add_good
 
