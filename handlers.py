@@ -110,15 +110,18 @@ class AutoReplyBot:
                 self.acc.send_message(chat_id, "❌ Сейчас свободных аккаунтов нет.")
                 return
 
-            lines = ["🟢 Свободные аккаунты:"]
+            lines = ["🟢 Свободные аккаунты:", ""]
             for i, g in enumerate(free_goods, start=1):
-                lot_link = f"https://funpay.com/lots/offer?id={g['lot_id']}"
-                lines.append(
-                    f"{i}. {g['title']}"
-                    f"Ссылка на лот: {lot_link}"
-                )
+                lot_id = g["lot_id"]
+                lot_link = f"https://funpay.com/lots/offer?id={lot_id}" if lot_id else "не указана"
 
-            self.acc.send_message(chat_id, "".join(lines))
+                lines.extend([
+                    f"{i}. {g['title']}",
+                    f"Ссылка на лот: {lot_link}",
+                    "",
+                ])
+
+            self.acc.send_message(chat_id, "\n".join(lines).strip())
             return
 
         if cmd == "/admin":

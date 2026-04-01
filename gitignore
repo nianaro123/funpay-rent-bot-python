@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+.idea/
+*.pyc
+rent_bot.sqlite3
+order_debug.html
+config.py
+goods.json
+steam_sign_out_worker/node_modules/
+steam_sign_out_worker/npm-debug.log
+steam_sign_out_worker/.env
