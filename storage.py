@@ -437,6 +437,27 @@ def get_rental_by_order_id(order_id: str):
     return row
 
 
+def get_rental_with_good_by_order_id(order_id: str):
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT
+            r.*,
+            g.login,
+            g.password,
+            g.note,
+            g.title,
+            g.marker,
+            g.shared_secret,
+            g.lot_id AS good_lot_id
+        FROM rentals r
+        JOIN goods g ON g.id = r.good_id
+        WHERE r.order_id = ?
+        LIMIT 1
+    """, (order_id,)).fetchone()
+    conn.close()
+    return row
+
+
 def list_active_rentals():
     conn = get_connection()
     rows = conn.execute("""

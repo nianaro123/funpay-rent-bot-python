@@ -11,3 +11,8 @@ HELP_TEXT = (
     "/code — код для входа\n"
     "/time — время аренды"
 )
+
+STEAM_SIGN_OUT_ENABLED = True
+STEAM_SIGN_OUT_NODE_BIN = "node"
+STEAM_SIGN_OUT_WORKER_PATH = "steam_sign_out_worker/steam_kick_all_sessions_worker.js"
+STEAM_SIGN_OUT_TIMEOUT_SEC = 420
