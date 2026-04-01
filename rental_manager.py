@@ -19,11 +19,13 @@ from storage import (
     mark_warned,
     mark_ended_msg,
     get_rental_by_order_id,
+    get_rental_with_good_by_order_id,
     get_active_rental_by_buyer,
     set_bonus_applied,
     add_extension,
 )
 from tg_notify import send_admin_notification
+from steam_session_worker import trigger_steam_sign_out_async
 
 LOGGER = logging.getLogger(__name__)
 
@@ -244,47 +246,52 @@ class RentalManager:
         self.acc.send_message(chat_id, self._format_review_bonus_message(rental))
         LOGGER.info("Бонус за отзыв применён для order_id=%s", order_id)
 
-    def handle_refund_notice(self, chat_id: int | str, text: str) -> None:
-        match = re.search(r"#([A-Z0-9]+)", text)
-        if not match:
-            LOGGER.warning("Не удалось извлечь order_id из сообщения о возврате: %s", text)
-            return
+def handle_refund_notice(self, chat_id: int | str, text: str) -> None:
+    match = re.search(r"#([A-Z0-9]+)", text)
+    if not match:
+        LOGGER.warning("Не удалось извлечь order_id из сообщения о возврате: %s", text)
+        return
 
-        order_id = match.group(1)
-        rental = get_rental_by_order_id(order_id)
+    order_id = match.group(1)
+    rental = get_rental_by_order_id(order_id)
 
-        if not rental:
-            LOGGER.info("Для возврата order_id=%s активная аренда не найдена", order_id)
-            return
+    if not rental:
+        LOGGER.info("Для возврата order_id=%s активная аренда не найдена", order_id)
+        return
 
-        if rental["closed"]:
-            LOGGER.info("Аренда order_id=%s уже закрыта к моменту обработки возврата", order_id)
-            return
+    if rental["closed"]:
+        LOGGER.info("Аренда order_id=%s уже закрыта к моменту обработки возврата", order_id)
+        return
 
-        try:
-            lot_id = int(rental["lot_id"]) if rental["lot_id"] else 0
-            if lot_id:
-                self.lot_manager.set_lot_free(lot_id)
-                LOGGER.info("Лот %s переведён в статус 'Свободен!' после возврата по заказу %s", lot_id, order_id)
-        except Exception as e:
-            LOGGER.exception(
-                "Не удалось вернуть лот в статус 'Свободен!' после возврата order_id=%s: %s",
-                order_id,
-                e,
-            )
+    rental_snapshot = get_rental_with_good_by_order_id(order_id)
 
-        try:
-            close_rental(order_id)
-            mark_order_refunded(order_id, int(time.time()))
-            LOGGER.info("Аренда закрыта после возврата средств, order_id=%s", order_id)
-        except Exception as e:
-            LOGGER.exception("Не удалось закрыть аренду после возврата order_id=%s: %s", order_id, e)
-            return
+    try:
+        lot_id = int(rental["lot_id"]) if rental["lot_id"] else 0
+        if lot_id:
+            self.lot_manager.set_lot_free(lot_id)
+            LOGGER.info("Лот %s переведён в статус 'Свободен!' после возврата по заказу %s", lot_id, order_id)
+    except Exception as e:
+        LOGGER.exception(
+            "Не удалось вернуть лот в статус 'Свободен!' после возврата order_id=%s: %s",
+            order_id,
+            e,
+        )
 
-        try:
-            self.acc.send_message(chat_id, self._format_refund_message(order_id))
-        except Exception as e:
-            LOGGER.exception("Не удалось отправить сообщение после возврата order_id=%s: %s", order_id, e)
+    try:
+        close_rental(order_id)
+        mark_order_refunded(order_id, int(time.time()))
+        LOGGER.info("Аренда закрыта после возврата средств, order_id=%s", order_id)
+
+        if rental_snapshot:
+            trigger_steam_sign_out_async(rental_snapshot, reason="refund")
+    except Exception as e:
+        LOGGER.exception("Не удалось закрыть аренду после возврата order_id=%s: %s", order_id, e)
+        return
+
+    try:
+        self.acc.send_message(chat_id, self._format_refund_message(order_id))
+    except Exception as e:
+        LOGGER.exception("Не удалось отправить сообщение после возврата order_id=%s: %s", order_id, e)
 
     def handle_order_confirmed_notice(self, chat_id: int | str, text: str) -> None:
         match_order = re.search(r"#([A-Z0-9]+)", text)
@@ -322,65 +329,68 @@ class RentalManager:
         LOGGER.info("Бонус за отзыв применён для order_id=%s", rental["order_id"])
         return True
 
-    def tick(self) -> None:
-        now = int(time.time())
-        rentals = list_active_rentals()
+def tick(self) -> None:
+    now = int(time.time())
+    rentals = list_active_rentals()
 
-        for rental in rentals:
-            order_id = rental["order_id"]
-            chat_id = rental["chat_id"]
-            buyer_name = rental["buyer_username"] or rental["buyer_id"] or "Неизвестный клиент"
+    for rental in rentals:
+        order_id = rental["order_id"]
+        chat_id = rental["chat_id"]
+        buyer_name = rental["buyer_username"] or rental["buyer_id"] or "Неизвестный клиент"
 
-            time_left = rental["paid_end_ts"] - now
-            if rental["warned_10m"] == 0 and 0 < time_left <= self.WARNING_SECONDS:
+        time_left = rental["paid_end_ts"] - now
+        if rental["warned_10m"] == 0 and 0 < time_left <= self.WARNING_SECONDS:
+            try:
+                self.acc.send_message(
+                    chat_id,
+                    self._format_warning_message(order_id, rental),
+                )
+                mark_warned(order_id)
+            except Exception as e:
+                LOGGER.exception("Ошибка предупреждения order_id=%s: %s", order_id, e)
+
+        if rental["ended_msg_sent"] == 0 and now >= rental["paid_end_ts"]:
+            try:
+                self.acc.send_message(
+                    chat_id,
+                    self._format_end_message(order_id),
+                )
+                mark_ended_msg(order_id)
+            except Exception as e:
+                LOGGER.exception("Ошибка сообщения о завершении order_id=%s: %s", order_id, e)
+
+        if now >= rental["grace_end_ts"]:
+            try:
                 try:
-                    self.acc.send_message(
-                        chat_id,
-                        self._format_warning_message(order_id, rental),
-                    )
-                    mark_warned(order_id)
+                    lot_id = int(rental["good_lot_id"]) if rental["good_lot_id"] else 0
+                    if lot_id:
+                        self.lot_manager.set_lot_free(lot_id)
+                        LOGGER.info("Лот %s переведён в статус 'Свободен!'", lot_id)
                 except Exception as e:
-                    LOGGER.exception("Ошибка предупреждения order_id=%s: %s", order_id, e)
-
-            if rental["ended_msg_sent"] == 0 and now >= rental["paid_end_ts"]:
-                try:
-                    self.acc.send_message(
-                        chat_id,
-                        self._format_end_message(order_id),
+                    LOGGER.exception(
+                        "Не удалось сменить название лота обратно на 'Свободен!' для order_id=%s: %s",
+                        order_id,
+                        e,
                     )
-                    mark_ended_msg(order_id)
-                except Exception as e:
-                    LOGGER.exception("Ошибка сообщения о завершении order_id=%s: %s", order_id, e)
 
-            if now >= rental["grace_end_ts"]:
-                try:
-                    try:
-                        lot_id = int(rental["good_lot_id"]) if rental["good_lot_id"] else 0
-                        if lot_id:
-                            self.lot_manager.set_lot_free(lot_id)
-                            LOGGER.info("Лот %s переведён в статус 'Свободен!'", lot_id)
-                    except Exception as e:
-                        LOGGER.exception(
-                            "Не удалось сменить название лота обратно на 'Свободен!' для order_id=%s: %s",
-                            order_id,
-                            e,
-                        )
+                close_rental(order_id)
+                LOGGER.info("Аренда закрыта order_id=%s", order_id)
 
-                    close_rental(order_id)
-                    LOGGER.info("Аренда закрыта order_id=%s", order_id)
+                trigger_steam_sign_out_async(rental, reason="grace_timeout")
 
-                    chat_link = f"https://funpay.com/chat/?node={chat_id}"
-                    send_admin_notification(
-                        "\n".join([
-                            "⛔ Аренда закрыта автоматически без подтверждения",
-                            f"Клиент: {buyer_name}",
-                            f"Заказ: #{order_id}",
-                            f"good_id: {rental['good_id']}",
-                            f"Маркер: {rental['marker']}",
-                            f"Логин аккаунта: {rental['login']}",
-                            "Статус: аккаунт возвращён в пул, лот переведён в 'Свободен!'",
-                            f"Чат: {chat_link}",
-                        ])
-                    )
-                except Exception as e:
-                    LOGGER.exception("Ошибка закрытия аренды order_id=%s: %s", order_id, e)
+                chat_link = f"https://funpay.com/chat/?node={chat_id}"
+                send_admin_notification(
+                    "\n".join([
+                        "⛔ Аренда закрыта автоматически без подтверждения",
+                        f"Клиент: {buyer_name}",
+                        f"Заказ: #{order_id}",
+                        f"good_id: {rental['good_id']}",
+                        f"Маркер: {rental['marker']}",
+                        f"Логин аккаунта: {rental['login']}",
+                        "Статус: аккаунт возвращён в пул, лот переведён в 'Свободен!'",
+                        f"Чат: {chat_link}",
+                    ])
+                )
+            except Exception as e:
+                LOGGER.exception("Ошибка закрытия аренды order_id=%s: %s", order_id, e)
+
