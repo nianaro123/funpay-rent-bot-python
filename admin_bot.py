@@ -34,10 +34,13 @@ from storage import (
     get_confirmed_income_total,
     get_confirmed_income_by_good,
     get_rental_by_order_id,
+    get_rental_with_good_by_order_id,
     extend_rental,
     add_extension,
+    close_rental,
 )
 from lot_manager import LotManager
+from steam_session_worker import trigger_steam_sign_out_async
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,6 +51,7 @@ LOGGER = logging.getLogger(__name__)
 
 ADD_LOT_LINK, ADD_LOGIN, ADD_PASSWORD, ADD_NOTE, ADD_SHARED_SECRET = range(5)
 EDIT_GOOD_ID, EDIT_LOT_LINK, EDIT_LOGIN, EDIT_PASSWORD, EDIT_NOTE, EDIT_SHARED_SECRET = range(5, 11)
+CLOSE_RENT_ROW = 11
 
 FUNPAY_ACC = None
 
@@ -57,6 +61,7 @@ BTN_LIST_GOODS = "📦 List Goods"
 BTN_ACTIVE_RENTALS = "📊 Active Rentals"
 BTN_FREE_GOODS = "🟢 Free Goods"
 BTN_STATS = "💰 Stats"
+BTN_CLOSE_RENTAL = "⛔ Close Rental"
 
 
 def get_main_keyboard() -> ReplyKeyboardMarkup:
@@ -65,6 +70,7 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
             [BTN_ADD_GOOD, BTN_EDIT_GOOD],
             [BTN_LIST_GOODS, BTN_ACTIVE_RENTALS],
             [BTN_FREE_GOODS, BTN_STATS],
+            [BTN_CLOSE_RENTAL],
         ],
         resize_keyboard=True,
     )
@@ -163,13 +169,16 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{BTN_LIST_GOODS} — список товаров\n"
         f"{BTN_ACTIVE_RENTALS} — активные аренды\n"
         f"{BTN_FREE_GOODS} — число свободных товаров\n"
-        f"{BTN_STATS} — статистика за всё время\n\n"
+        f"{BTN_STATS} — статистика за всё время\n"
+        f"{BTN_CLOSE_RENTAL} — вручную закрыть аренду\n\n"
         "Команды:\n"
         "/goods — список товаров\n"
         "/free — число свободных товаров\n"
         "/rentals — активные аренды + оставшееся время\n"
         "/extendrent ORDER_ID HOURS — вручную продлить аренду клиенту\n"
         "/extendrentrow N HOURS — вручную продлить аренду по номеру строки из /rentals\n"
+        "/closerent ORDER_ID — вручную закрыть аренду по номеру заказа\n"
+        "/closerentrow N — вручную закрыть аренду по номеру строки из /rentals\n"
         "/addgood — пошаговое добавление товара\n"
         "/editgood — пошаговое редактирование товара\n"
         "/disablegood good_id\n"
@@ -206,7 +215,8 @@ async def admin_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.args = ["all"]
         return await stats_cmd(update, context)
 
-
+    if text == BTN_CLOSE_RENTAL:
+        return await closerent_start(update, context)
 
 
 async def addgood_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -224,6 +234,7 @@ async def free_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stats_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.args = ["all"]
     return await stats_cmd(update, context)
+
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -288,6 +299,175 @@ async def rentals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     await update.message.reply_text("\n".join(lines))
+
+
+async def _close_rental_internal(order_id: str) -> tuple[bool, str]:
+    rental = get_rental_by_order_id(order_id)
+    if not rental:
+        return False, f"❌ Заказ #{order_id} не найден в rentals."
+
+    if rental["closed"]:
+        return False, f"❌ Заказ #{order_id} уже закрыт."
+
+    rental_snapshot = get_rental_with_good_by_order_id(order_id)
+
+    try:
+        lot_id = 0
+        if rental_snapshot and rental_snapshot["good_lot_id"]:
+            lot_id = int(rental_snapshot["good_lot_id"])
+        elif rental["lot_id"]:
+            lot_id = int(rental["lot_id"])
+
+        if lot_id and FUNPAY_ACC is not None:
+            manager = LotManager(FUNPAY_ACC)
+            manager.set_lot_free(lot_id)
+            LOGGER.info("Лот %s переведён в статус 'Свободен!' при ручном закрытии заказа %s", lot_id, order_id)
+    except Exception as e:
+        LOGGER.exception("Не удалось вернуть лот в статус 'Свободен!' для order_id=%s: %s", order_id, e)
+
+    try:
+        close_rental(order_id)
+        LOGGER.info("Аренда вручную закрыта, order_id=%s", order_id)
+    except Exception as e:
+        LOGGER.exception("Не удалось закрыть аренду вручную, order_id=%s: %s", order_id, e)
+        return False, f"❌ Не удалось закрыть заказ #{order_id}."
+
+    buyer_msg_sent = False
+    if FUNPAY_ACC is not None and rental_snapshot:
+        try:
+            FUNPAY_ACC.send_message(
+                rental_snapshot["chat_id"],
+                f"⛔ Аренда по заказу #{order_id} была завершена продавцом вручную.\n"
+                f"Аккаунт возвращён в пул. Если это ошибка — напишите /admin"
+            )
+            buyer_msg_sent = True
+        except Exception as e:
+            LOGGER.exception("Не удалось отправить сообщение клиенту для order_id=%s: %s", order_id, e)
+
+    sign_out_started = False
+    try:
+        if rental_snapshot:
+            sign_out_started = trigger_steam_sign_out_async(rental_snapshot, reason="admin_manual_close")
+    except Exception as e:
+        LOGGER.exception("Не удалось запустить Steam sign-out для order_id=%s: %s", order_id, e)
+
+    text = (
+        f"✅ Заказ #{order_id} закрыт вручную.\n"
+        f"Сообщение клиенту: {'отправлено' if buyer_msg_sent else 'не отправлено'}\n"
+        f"Steam sign-out: {'запущен' if sign_out_started else 'не запущен'}"
+    )
+    return True, text
+
+
+async def closerent_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    if len(context.args) != 1:
+        await update.message.reply_text(
+            "Формат: /closerent ORDER_ID\n"
+            "Пример: /closerent ANU383LY"
+        )
+        return
+
+    order_id = context.args[0].strip().upper()
+    _, text = await _close_rental_internal(order_id)
+    await update.message.reply_text(text)
+
+
+async def closerentrow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    if len(context.args) != 1:
+        await update.message.reply_text(
+            "Формат: /closerentrow N\n"
+            "Сначала вызови /rentals, потом используй номер строки.\n"
+            "Пример: /closerentrow 2"
+        )
+        return
+
+    try:
+        row_num = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("N должен быть числом.")
+        return
+
+    if row_num <= 0:
+        await update.message.reply_text("N должен быть больше 0.")
+        return
+
+    rentals = get_rentals_snapshot()
+    if not rentals:
+        await update.message.reply_text("Активных аренд нет.")
+        return
+
+    if row_num > len(rentals):
+        await update.message.reply_text(
+            f"❌ Строки {row_num} нет. Сейчас активных аренд: {len(rentals)}."
+        )
+        return
+
+    rental = rentals[row_num - 1]
+    order_id = rental["order_id"]
+
+    _, text = await _close_rental_internal(order_id)
+    await update.message.reply_text(f"Строка {row_num}:\n{text}")
+
+
+async def closerent_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return ConversationHandler.END
+
+    rentals = get_rentals_snapshot()
+    if not rentals:
+        await update.message.reply_text("Активных аренд нет.", reply_markup=get_main_keyboard())
+        return ConversationHandler.END
+
+    lines = [
+        "Введите номер строки аренды из списка /rentals, которую нужно закрыть.",
+        "",
+        "Пример: 1",
+        "Или /cancel для отмены.",
+    ]
+    await update.message.reply_text("\n".join(lines))
+    return CLOSE_RENT_ROW
+
+
+async def closerent_row_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (update.message.text or "").strip()
+
+    try:
+        row_num = int(text)
+    except ValueError:
+        await update.message.reply_text("Введите номер строки числом. Например: 1")
+        return CLOSE_RENT_ROW
+
+    if row_num <= 0:
+        await update.message.reply_text("Номер строки должен быть больше 0.")
+        return CLOSE_RENT_ROW
+
+    rentals = get_rentals_snapshot()
+    if not rentals:
+        await update.message.reply_text("Активных аренд нет.", reply_markup=get_main_keyboard())
+        return ConversationHandler.END
+
+    if row_num > len(rentals):
+        await update.message.reply_text(
+            f"❌ Строки {row_num} нет. Сейчас активных аренд: {len(rentals)}."
+        )
+        return CLOSE_RENT_ROW
+
+    rental = rentals[row_num - 1]
+    order_id = rental["order_id"]
+
+    _, result_text = await _close_rental_internal(order_id)
+
+    await update.message.reply_text(
+        f"Строка {row_num}:\n{result_text}",
+        reply_markup=get_main_keyboard(),
+    )
+    return ConversationHandler.END
 
 
 async def extendrent_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -853,15 +1033,28 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel_cmd)],
     )
 
+    closerent_conv = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Regex(f"^{re.escape(BTN_CLOSE_RENTAL)}$"), closerent_start),
+        ],
+        states={
+            CLOSE_RENT_ROW: [MessageHandler(filters.TEXT & ~filters.COMMAND, closerent_row_input)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_cmd)],
+    )
+
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("goods", goods_cmd))
     app.add_handler(CommandHandler("free", free_cmd))
     app.add_handler(CommandHandler("rentals", rentals_cmd))
     app.add_handler(CommandHandler("extendrent", extendrent_cmd))
     app.add_handler(CommandHandler("extendrentrow", extendrentrow_cmd))
+    app.add_handler(CommandHandler("closerent", closerent_cmd))
+    app.add_handler(CommandHandler("closerentrow", closerentrow_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(addgood_conv)
     app.add_handler(editgood_conv)
+    app.add_handler(closerent_conv)
     app.add_handler(CommandHandler("disablegood", disablegood_cmd))
     app.add_handler(CommandHandler("enablegood", enablegood_cmd))
     app.add_handler(CommandHandler("delgood", delgood_cmd))
