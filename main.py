@@ -26,33 +26,61 @@ def start_tick_loop(bot, stop_event: threading.Event, interval: int = 5):
         stop_event.wait(interval)
 
 
+def _is_newer_message_id(current_id: str, stored_id: str | None) -> bool:
+    if stored_id is None:
+        return True
+
+    try:
+        return int(current_id) > int(stored_id)
+    except (TypeError, ValueError):
+        return str(current_id) > str(stored_id)
+
+
 def bootstrap_chat_state(acc) -> None:
     """
-    При первом запуске/после деплоя помечаем текущее последнее сообщение
-    в каждом уже существующем чате как "уже виденное", чтобы бот не начал
-    обрабатывать старые системные сообщения после рестарта.
+    На старте синхронизируем chat_state с текущим состоянием чатов.
+
+    ВАЖНО:
+    - если записи для чата нет -> создаём
+    - если запись есть, но last_message_id отстаёт -> обновляем
+    - если запись актуальна -> не трогаем
+
+    Это защищает от повторной обработки старых системных сообщений
+    после рестарта/deploy на Railway.
     """
     logging.info("Инициализация chat_state для существующих чатов...")
 
-    initialized_count = 0
+    inserted_count = 0
+    updated_count = 0
     skipped_count = 0
 
     for chat in acc.chats.values():
         chat_id = str(chat.id)
+        last_message = getattr(chat, "last_message", None)
 
-        # Если состояние чата уже есть в БД — ничего не трогаем.
-        if get_last_message_id(chat_id) is not None:
+        if not last_message or getattr(last_message, "id", None) is None:
             skipped_count += 1
             continue
 
-        last_message = getattr(chat, "last_message", None)
-        if last_message and getattr(last_message, "id", None) is not None:
-            set_last_message_id(chat_id, str(last_message.id))
-            initialized_count += 1
+        current_msg_id = str(last_message.id)
+        stored_msg_id = get_last_message_id(chat_id)
+
+        if stored_msg_id is None:
+            set_last_message_id(chat_id, current_msg_id)
+            inserted_count += 1
+            continue
+
+        if _is_newer_message_id(current_msg_id, stored_msg_id):
+            set_last_message_id(chat_id, current_msg_id)
+            updated_count += 1
+            continue
+
+        skipped_count += 1
 
     logging.info(
-        "Инициализация chat_state завершена: initialized=%s, skipped=%s",
-        initialized_count,
+        "Инициализация chat_state завершена: inserted=%s, updated=%s, skipped=%s",
+        inserted_count,
+        updated_count,
         skipped_count,
     )
 
@@ -67,9 +95,8 @@ def main():
         acc.add_chats(chats)
         print(f"Чаты загружены: {len(chats)}")
 
-        # ВАЖНО:
-        # при первом запуске на новом окружении сохраняем текущие последние
-        # сообщения в чатах, чтобы не обрабатывать старый хвост истории.
+        # Синхронизируем chat_state с текущими последними сообщениями,
+        # чтобы не обрабатывать старый хвост истории после рестарта.
         bootstrap_chat_state(acc)
 
     except Exception as e:
