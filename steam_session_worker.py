@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import threading
 
-from config import (
+from settings import (
     STEAM_SIGN_OUT_ENABLED,
     STEAM_SIGN_OUT_NODE_BIN,
     STEAM_SIGN_OUT_WORKER_PATH,

@@ -1,11 +1,15 @@
 import re
 import sqlite3
+from pathlib import Path
+from settings import DB_PATH
 
-DB_PATH = "rent_bot.sqlite3"
 
 
 def get_connection():
-    conn = sqlite3.connect(DB_PATH)
+    db_path = Path(DB_PATH)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     return conn
 

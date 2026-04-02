@@ -15,7 +15,7 @@ from telegram.ext import (
     filters,
 )
 
-from config import (
+from settings import (
     TELEGRAM_ADMIN_BOT_TOKEN,
     TELEGRAM_ADMIN_USER_ID,
     GOLDEN_KEY,

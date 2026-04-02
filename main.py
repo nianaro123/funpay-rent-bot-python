@@ -7,7 +7,7 @@ from FunPayAPI import Account
 from FunPayAPI.updater.runner import Runner
 from FunPayAPI.updater.events import NewMessageEvent
 
-from config import GOLDEN_KEY, USER_AGENT, REQUESTS_DELAY
+from settings import GOLDEN_KEY, USER_AGENT, REQUESTS_DELAY
 from handlers import AutoReplyBot
 from storage import init_db
 
