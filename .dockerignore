@@ -1,0 +1,15 @@
+.git
+.gitignore
+venv
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+node_modules
+steam_sign_out_worker/node_modules
+.env
+*.sqlite3
+data
+steam_debug
+order_debug.html

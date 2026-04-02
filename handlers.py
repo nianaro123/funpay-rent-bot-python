@@ -12,7 +12,7 @@ from storage import (
     is_chat_welcomed,
     mark_chat_welcomed,
 )
-from config import WELCOME_TEXT, HELP_TEXT
+from settings import WELCOME_TEXT, HELP_TEXT
 from order_handler import handle_paid_order_message
 from steam_guard import generate_steam_guard_code
 from tg_notify import send_admin_notification
