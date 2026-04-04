@@ -5,16 +5,24 @@ import threading
 
 from FunPayAPI import Account
 from FunPayAPI.updater.runner import Runner
-from FunPayAPI.updater.events import NewMessageEvent
+from FunPayAPI.updater.events import (
+    NewMessageEvent,
+    NewOrderEvent,
+    OrderStatusChangedEvent,
+)
+from FunPayAPI.common.enums import OrderStatuses
 
 from settings import GOLDEN_KEY, USER_AGENT, REQUESTS_DELAY
 from handlers import AutoReplyBot
 from storage import init_db
+from order_handler import handle_paid_order_event
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 def start_tick_loop(bot, stop_event: threading.Event, interval: int = 5):
@@ -53,11 +61,25 @@ def main():
 
     try:
         for event in runner.listen(requests_delay=REQUESTS_DELAY):
-            if isinstance(event, NewMessageEvent):
-                try:
+            try:
+                if isinstance(event, NewMessageEvent):
                     bot.handle_new_message(event)
-                except Exception:
-                    logging.exception("Ошибка при обработке нового сообщения")
+                    continue
+
+                if isinstance(event, NewOrderEvent):
+                    LOGGER.info("Обнаружен новый заказ #%s status=%s", event.order.id, event.order.status)
+                    if event.order.status == OrderStatuses.PAID:
+                        handle_paid_order_event(acc, bot.rm, event.order)
+                    continue
+
+                if isinstance(event, OrderStatusChangedEvent):
+                    LOGGER.info("Изменился статус заказа #%s status=%s", event.order.id, event.order.status)
+                    if event.order.status == OrderStatuses.PAID:
+                        handle_paid_order_event(acc, bot.rm, event.order)
+                    continue
+
+            except Exception:
+                logging.exception("Ошибка при обработке события Runner")
 
     except KeyboardInterrupt:
         print("Остановлено")
