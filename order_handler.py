@@ -192,12 +192,17 @@ def resolve_order_meta(acc, order_id: str, text: str) -> tuple[str | None, int |
     return marker, hours
 
 
-def handle_paid_order_message(acc, rm, chat_id: int | str, text: str):
-    order_id = extract_order_id(text)
-    if not order_id:
-        acc.send_message(chat_id, "❌ Не удалось определить номер заказа.")
-        return
-
+def _process_paid_order(
+    acc,
+    rm,
+    *,
+    order_id: str,
+    chat_id: int | str,
+    buyer_id: int,
+    buyer_username: str,
+    source_text: str,
+    amount_rub: float,
+):
     if get_rental_by_order_id(order_id):
         LOGGER.info("Заказ %s уже обработан как аренда", order_id)
         return
@@ -212,7 +217,7 @@ def handle_paid_order_message(acc, rm, chat_id: int | str, text: str):
         )
         return
 
-    marker, hours = resolve_order_meta(acc, order_id, text)
+    marker, hours = resolve_order_meta(acc, order_id, source_text)
 
     if not marker:
         acc.send_message(chat_id, "❌ Не удалось определить маркер товара (#1, #2 и т.д.).")
@@ -229,22 +234,6 @@ def handle_paid_order_message(acc, rm, chat_id: int | str, text: str):
 
     min_hours = extract_min_hours(good_snapshot["title"])
     lot_id = good_snapshot["lot_id"]
-
-    msg = acc.get_chat_history(chat_id, interlocutor_username=None, from_id=0)
-    buyer_id = None
-    buyer_username = None
-    amount_rub = get_order_amount_rub(acc, order_id)
-
-    for m in reversed(msg):
-        if m.author_id not in (0, acc.id):
-            buyer_id = m.author_id
-            buyer_username = m.author
-            break
-
-    if buyer_id is None:
-        acc.send_message(chat_id, "❌ Не удалось определить покупателя заказа.")
-        return
-
     chat_link = f"https://funpay.com/chat/?node={chat_id}"
 
     active_same_marker_rental = get_active_rental_by_buyer_and_marker(buyer_id, marker)
@@ -371,4 +360,72 @@ def handle_paid_order_message(acc, rm, chat_id: int | str, text: str):
         f"good_id: {issued_good['id']}\n"
         f"Логин аккаунта: {issued_good['login']}\n"
         f"Чат: {chat_link}"
+    )
+
+
+def handle_paid_order_message(acc, rm, chat_id: int | str, text: str):
+    order_id = extract_order_id(text)
+    if not order_id:
+        acc.send_message(chat_id, "❌ Не удалось определить номер заказа.")
+        return
+
+    buyer_id = None
+    buyer_username = None
+    amount_rub = get_order_amount_rub(acc, order_id)
+
+    msg = acc.get_chat_history(chat_id, interlocutor_username=None, from_id=0)
+    for m in reversed(msg):
+        if m.author_id not in (0, acc.id):
+            buyer_id = m.author_id
+            buyer_username = m.author
+            break
+
+    if buyer_id is None:
+        acc.send_message(chat_id, "❌ Не удалось определить покупателя заказа.")
+        return
+
+    _process_paid_order(
+        acc,
+        rm,
+        order_id=order_id,
+        chat_id=chat_id,
+        buyer_id=buyer_id,
+        buyer_username=buyer_username,
+        source_text=text,
+        amount_rub=amount_rub,
+    )
+
+
+def handle_paid_order_event(acc, rm, order_obj):
+    """
+    Надёжная обработка оплаты через события заказов Runner'а,
+    а не через системные сообщения чата.
+    """
+    order_id = order_obj.id
+    buyer_id = int(order_obj.buyer_id)
+    buyer_username = order_obj.buyer_username
+    amount_rub = float(order_obj.price or 0.0)
+    source_text = order_obj.description or ""
+
+    chat = acc.get_chat_by_name(buyer_username, make_request=True)
+    if not chat:
+        LOGGER.warning("Не удалось найти чат покупателя %s для заказа %s", buyer_username, order_id)
+        send_admin_notification(
+            f"⚠️ Не удалось найти чат покупателя для нового заказа\n"
+            f"Клиент: {buyer_username}\n"
+            f"Заказ: #{order_id}"
+        )
+        return
+
+    chat_id = chat.id
+
+    _process_paid_order(
+        acc,
+        rm,
+        order_id=order_id,
+        chat_id=chat_id,
+        buyer_id=buyer_id,
+        buyer_username=buyer_username,
+        source_text=source_text,
+        amount_rub=amount_rub,
     )
