@@ -69,7 +69,14 @@ class AutoReplyBot:
             return
 
         last_id = get_last_message_id(chat_id)
-        if last_id is not None and self._message_id_is_not_new(msg_id, last_id):
+        # 🛑 НОВЫЙ ЧАТ — НЕ ОБРАБАТЫВАЕМ (анти-реплей)
+        if last_id is None:
+            LOGGER.info("Инициализация чата (пропуск первого сообщения) chat_id=%s msg_id=%s", chat_id, msg_id)
+            set_last_message_id(chat_id, msg_id)
+            return
+
+        # 🛑 СТАРОЕ СООБЩЕНИЕ
+        if self._message_id_is_not_new(msg_id, last_id):
             LOGGER.debug(
                 "Пропуск старого/дублирующего сообщения chat_id=%s msg_id=%s last_id=%s",
                 chat_id,
