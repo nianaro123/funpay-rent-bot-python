@@ -1,3 +1,4 @@
+# handlers.py
 import logging
 import time
 
@@ -68,15 +69,30 @@ class AutoReplyBot:
             LOGGER.warning("Пропуск сообщения без id в chat_id=%s", chat_id)
             return
 
+        low = text.lower()
+        is_system_notice = (
+            self._is_paid_order_notice(low)
+            or self._is_order_confirmed_notice(low)
+            or self._is_review_notice(low)
+            or self._is_refund_notice(low)
+        )
+
         last_id = get_last_message_id(chat_id)
-        # 🛑 НОВЫЙ ЧАТ — НЕ ОБРАБАТЫВАЕМ (анти-реплей)
-        if last_id is None:
-            LOGGER.info("Инициализация чата (пропуск первого сообщения) chat_id=%s msg_id=%s", chat_id, msg_id)
+
+        # Если для чата ещё нет chat_state:
+        # - первое обычное сообщение просто запоминаем и не обрабатываем
+        # - первое системное сообщение ОБРАБАТЫВАЕМ
+        if last_id is None and not is_system_notice:
+            LOGGER.info(
+                "Инициализация chat_state без обработки первого обычного сообщения chat_id=%s msg_id=%s",
+                chat_id,
+                msg_id,
+            )
             set_last_message_id(chat_id, msg_id)
             return
 
-        # 🛑 СТАРОЕ СООБЩЕНИЕ
-        if self._message_id_is_not_new(msg_id, last_id):
+        # Защита от дублей / старых сообщений
+        if last_id is not None and self._message_id_is_not_new(msg_id, last_id):
             LOGGER.debug(
                 "Пропуск старого/дублирующего сообщения chat_id=%s msg_id=%s last_id=%s",
                 chat_id,
@@ -94,36 +110,25 @@ class AutoReplyBot:
                 LOGGER.debug("Пропуск собственного сообщения chat_id=%s msg_id=%s", chat_id, msg_id)
                 return
 
-            # Системные сообщения FunPay
-            if author_id == 0:
-                low = text.lower()
+            # Системные сообщения определяем по тексту, а не по author_id == 0
+            if self._is_paid_order_notice(low):
+                LOGGER.info("Обработка уведомления об оплате chat_id=%s msg_id=%s", chat_id, msg_id)
+                handle_paid_order_message(self.acc, self.rm, chat_id, text)
+                return
 
-                if self._is_paid_order_notice(low):
-                    LOGGER.info("Обработка уведомления об оплате chat_id=%s msg_id=%s", chat_id, msg_id)
-                    handle_paid_order_message(self.acc, self.rm, chat_id, text)
-                    return
+            if self._is_order_confirmed_notice(low):
+                LOGGER.info("Обработка уведомления о подтверждении chat_id=%s msg_id=%s", chat_id, msg_id)
+                self.rm.handle_order_confirmed_notice(chat_id, text)
+                return
 
-                if self._is_order_confirmed_notice(low):
-                    LOGGER.info("Обработка уведомления о подтверждении chat_id=%s msg_id=%s", chat_id, msg_id)
-                    self.rm.handle_order_confirmed_notice(chat_id, text)
-                    return
+            if self._is_review_notice(low):
+                LOGGER.info("Обработка уведомления об отзыве chat_id=%s msg_id=%s", chat_id, msg_id)
+                self.rm.handle_review_notice(chat_id, text)
+                return
 
-                if self._is_review_notice(low):
-                    LOGGER.info("Обработка уведомления об отзыве chat_id=%s msg_id=%s", chat_id, msg_id)
-                    self.rm.handle_review_notice(chat_id, text)
-                    return
-
-                if self._is_refund_notice(low):
-                    LOGGER.info("Обработка уведомления о возврате chat_id=%s msg_id=%s", chat_id, msg_id)
-                    self.rm.handle_refund_notice(chat_id, text)
-                    return
-
-                LOGGER.debug(
-                    "Пропуск неизвестного системного сообщения chat_id=%s msg_id=%s text=%r",
-                    chat_id,
-                    msg_id,
-                    text[:200],
-                )
+            if self._is_refund_notice(low):
+                LOGGER.info("Обработка уведомления о возврате chat_id=%s msg_id=%s", chat_id, msg_id)
+                self.rm.handle_refund_notice(chat_id, text)
                 return
 
             # Команды клиента
