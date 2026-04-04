@@ -1,6 +1,8 @@
+import logging
 import time
 
 from FunPayAPI.updater.events import NewMessageEvent
+
 from rental_manager import RentalManager
 from storage import (
     get_last_message_id,
@@ -17,6 +19,8 @@ from order_handler import handle_paid_order_message
 from steam_guard import generate_steam_guard_code
 from tg_notify import send_admin_notification
 
+LOGGER = logging.getLogger(__name__)
+
 
 class AutoReplyBot:
     ADMIN_REQUEST_COOLDOWN = 5 * 60
@@ -25,6 +29,29 @@ class AutoReplyBot:
         self.acc = acc
         self.rm = RentalManager(acc)
 
+    @staticmethod
+    def _message_id_is_not_new(current_id: str, last_id: str) -> bool:
+        try:
+            return int(current_id) <= int(last_id)
+        except (TypeError, ValueError):
+            return current_id <= str(last_id)
+
+    @staticmethod
+    def _is_paid_order_notice(text_lower: str) -> bool:
+        return "оплатил заказ" in text_lower and "заказ" in text_lower
+
+    @staticmethod
+    def _is_order_confirmed_notice(text_lower: str) -> bool:
+        return "подтвердил успешное выполнение" in text_lower and "заказ" in text_lower
+
+    @staticmethod
+    def _is_review_notice(text_lower: str) -> bool:
+        return "написал отзыв" in text_lower and "заказ" in text_lower
+
+    @staticmethod
+    def _is_refund_notice(text_lower: str) -> bool:
+        return "вернул деньги покупателю" in text_lower and "заказ" in text_lower
+
     def handle_new_message(self, event: NewMessageEvent):
         msg = event.message
 
@@ -32,61 +59,80 @@ class AutoReplyBot:
         if not text:
             return
 
-        chat_id = msg.chat_id
+        chat_id = str(msg.chat_id)
         author_id = getattr(msg, "author_id", None)
         author = getattr(msg, "author", None)
-        msg_id = str(getattr(msg, "id", ""))
+        msg_id = str(getattr(msg, "id", "")).strip()
 
-        last_id = get_last_message_id(str(chat_id))
-        if last_id is not None and msg_id and self._message_id_is_not_new(msg_id, last_id):
+        if not msg_id:
+            LOGGER.warning("Пропуск сообщения без id в chat_id=%s", chat_id)
+            return
+
+        last_id = get_last_message_id(chat_id)
+        if last_id is not None and self._message_id_is_not_new(msg_id, last_id):
+            LOGGER.debug(
+                "Пропуск старого/дублирующего сообщения chat_id=%s msg_id=%s last_id=%s",
+                chat_id,
+                msg_id,
+                last_id,
+            )
             return
 
         try:
             if getattr(msg, "by_bot", False):
+                LOGGER.debug("Пропуск сообщения бота chat_id=%s msg_id=%s", chat_id, msg_id)
                 return
 
             if author_id == self.acc.id:
+                LOGGER.debug("Пропуск собственного сообщения chat_id=%s msg_id=%s", chat_id, msg_id)
                 return
 
+            # Системные сообщения FunPay
             if author_id == 0:
                 low = text.lower()
 
-                if "оплатил" in low and "заказ" in low:
+                if self._is_paid_order_notice(low):
+                    LOGGER.info("Обработка уведомления об оплате chat_id=%s msg_id=%s", chat_id, msg_id)
                     handle_paid_order_message(self.acc, self.rm, chat_id, text)
                     return
 
-                if "подтвердил успешное выполнение" in low and "заказ" in low:
+                if self._is_order_confirmed_notice(low):
+                    LOGGER.info("Обработка уведомления о подтверждении chat_id=%s msg_id=%s", chat_id, msg_id)
                     self.rm.handle_order_confirmed_notice(chat_id, text)
                     return
 
-                if "написал отзыв" in low and "заказ" in low:
+                if self._is_review_notice(low):
+                    LOGGER.info("Обработка уведомления об отзыве chat_id=%s msg_id=%s", chat_id, msg_id)
                     self.rm.handle_review_notice(chat_id, text)
                     return
 
-                if "вернул деньги покупателю" in low and "заказ" in low:
+                if self._is_refund_notice(low):
+                    LOGGER.info("Обработка уведомления о возврате chat_id=%s msg_id=%s", chat_id, msg_id)
                     self.rm.handle_refund_notice(chat_id, text)
                     return
 
+                LOGGER.debug(
+                    "Пропуск неизвестного системного сообщения chat_id=%s msg_id=%s text=%r",
+                    chat_id,
+                    msg_id,
+                    text[:200],
+                )
                 return
 
+            # Команды клиента
             if text.startswith("/"):
+                LOGGER.info("Обработка команды chat_id=%s msg_id=%s text=%s", chat_id, msg_id, text)
                 self.handle_command(chat_id, text, author_id, author)
                 return
 
-            if not is_chat_welcomed(str(chat_id)):
+            # Обычное сообщение клиента: только приветствие один раз
+            if not is_chat_welcomed(chat_id):
+                LOGGER.info("Отправка приветствия chat_id=%s msg_id=%s", chat_id, msg_id)
                 self.acc.send_message(chat_id, WELCOME_TEXT)
-                mark_chat_welcomed(str(chat_id))
+                mark_chat_welcomed(chat_id)
 
         finally:
-            if msg_id:
-                set_last_message_id(str(chat_id), msg_id)
-
-    @staticmethod
-    def _message_id_is_not_new(current_id: str, last_id: str) -> bool:
-        try:
-            return int(current_id) <= int(last_id)
-        except (TypeError, ValueError):
-            return current_id <= str(last_id)
+            set_last_message_id(chat_id, msg_id)
 
     def handle_command(self, chat_id, text, author_id=None, author=None):
         cmd = text.split()[0].lower()
