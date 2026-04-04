@@ -9,7 +9,7 @@ from FunPayAPI.updater.events import NewMessageEvent
 
 from settings import GOLDEN_KEY, USER_AGENT, REQUESTS_DELAY
 from handlers import AutoReplyBot
-from storage import init_db, get_last_message_id, set_last_message_id
+from storage import init_db
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,44 +26,6 @@ def start_tick_loop(bot, stop_event: threading.Event, interval: int = 5):
         stop_event.wait(interval)
 
 
-def bootstrap_chat_state(acc) -> None:
-    """
-    На старте инициализируем chat_state только для тех чатов,
-    которых ещё нет в БД.
-
-    ВАЖНО:
-    Не обновляем last_message_id у уже известных чатов,
-    иначе можно пропустить реальный заказ/отзыв/рефанд,
-    пришедший во время рестарта бота.
-    """
-    logging.info("Инициализация chat_state для новых чатов...")
-
-    inserted_count = 0
-    skipped_count = 0
-
-    for chat in acc.chats.values():
-        chat_id = str(chat.id)
-
-        # Если чат уже известен — ничего не трогаем.
-        if get_last_message_id(chat_id) is not None:
-            skipped_count += 1
-            continue
-
-        last_message = getattr(chat, "last_message", None)
-        if not last_message or getattr(last_message, "id", None) is None:
-            skipped_count += 1
-            continue
-
-        set_last_message_id(chat_id, str(last_message.id))
-        inserted_count += 1
-
-    logging.info(
-        "Инициализация chat_state завершена: inserted=%s, skipped=%s",
-        inserted_count,
-        skipped_count,
-    )
-
-
 def main():
     init_db()
 
@@ -73,12 +35,6 @@ def main():
         chats = acc.request_chats()
         acc.add_chats(chats)
         print(f"Чаты загружены: {len(chats)}")
-
-        # Инициализируем chat_state только для новых чатов,
-        # чтобы не переигрывать старую историю и не пропускать
-        # реальные новые события, пришедшие во время рестарта.
-        bootstrap_chat_state(acc)
-
     except Exception as e:
         print("Не удалось загрузить чаты:", e)
 
