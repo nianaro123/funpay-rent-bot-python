@@ -307,10 +307,19 @@ class RentalManager:
 
     def handle_order_confirmed_notice(self, chat_id: int | str, text: str) -> None:
         match_order = re.search(r"#([A-Z0-9]+)", text)
-        match_buyer = re.search(r"Покупатель\s+(.+?)\s+подтвердил успешное выполнение", text)
-
         order_id = match_order.group(1) if match_order else "UNKNOWN"
-        buyer_name = match_buyer.group(1) if match_buyer else "Неизвестный клиент"
+        buyer_name = "Неизвестный клиент"
+
+        if order_id != "UNKNOWN":
+            rental = get_rental_by_order_id(order_id)
+            if rental and rental["buyer_username"]:
+                buyer_name = rental["buyer_username"]
+
+        if buyer_name == "Неизвестный клиент":
+            match_buyer = re.search(r"Покупатель\s+(.+?)\s+подтвердил", text, flags=re.IGNORECASE | re.DOTALL)
+            if match_buyer:
+                buyer_name = match_buyer.group(1).strip()
+
         chat_link = f"https://funpay.com/chat/?node={chat_id}"
         mark_order_confirmed(order_id, int(time.time()))
 
