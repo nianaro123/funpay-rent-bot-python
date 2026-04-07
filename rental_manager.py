@@ -234,10 +234,17 @@ class RentalManager:
             return
 
         order_id = match.group(1)
+        buyer_name = "Неизвестный клиент"
+        buyer_match = re.search(r"Покупатель\s+(.+?)\s+написал отзыв", text, flags=re.IGNORECASE | re.DOTALL)
+        if buyer_match:
+            buyer_name = buyer_match.group(1).strip()
+
         rental = get_rental_by_order_id(order_id)
         if not rental or rental["closed"]:
             LOGGER.info("Для отзыва order_id=%s активная аренда не найдена", order_id)
             return
+        if buyer_name == "Неизвестный клиент" and rental["buyer_username"]:
+            buyer_name = rental["buyer_username"]
 
         if rental["bonus_applied"]:
             self.acc.send_message(
@@ -252,6 +259,16 @@ class RentalManager:
 
         rental = get_rental_by_order_id(order_id)
         self.acc.send_message(chat_id, self._format_review_bonus_message(rental))
+        chat_link = f"https://funpay.com/chat/?node={chat_id}"
+        send_admin_notification(
+            "\n".join([
+                "⭐ Покупатель оставил отзыв",
+                f"Клиент: {buyer_name}",
+                f"Заказ: #{order_id}",
+                "Бонус: +1 час",
+                f"Чат: {chat_link}",
+            ])
+        )
         LOGGER.info("Бонус за отзыв применён для order_id=%s", order_id)
 
     def handle_refund_notice(self, chat_id: int | str, text: str) -> None:
