@@ -79,17 +79,8 @@ class AutoReplyBot:
 
         last_id = get_last_message_id(chat_id)
 
-        # Если для чата ещё нет chat_state:
-        # - первое обычное сообщение просто запоминаем и не обрабатываем
-        # - первое системное сообщение ОБРАБАТЫВАЕМ
-        if last_id is None and not is_system_notice:
-            LOGGER.info(
-                "Инициализация chat_state без обработки первого обычного сообщения chat_id=%s msg_id=%s",
-                chat_id,
-                msg_id,
-            )
-            set_last_message_id(chat_id, msg_id)
-            return
+        # В новом чате первое сообщение тоже должно обрабатываться:
+        # это важно для команд (например, /free) и приветствия.
 
         # Защита от дублей / старых сообщений
         if last_id is not None and self._message_id_is_not_new(msg_id, last_id):
