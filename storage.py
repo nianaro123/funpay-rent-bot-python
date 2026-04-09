@@ -538,15 +538,19 @@ def extend_rental(order_id: str, add_seconds: int):
     conn.close()
 
 
-def set_bonus_applied(order_id: str):
+def set_bonus_applied(order_id: str) -> bool:
     conn = get_connection()
-    conn.execute("""
+    cur = conn.execute("""
         UPDATE rentals
         SET bonus_applied = 1
         WHERE order_id = ?
+          AND closed = 0
+          AND bonus_applied = 0
     """, (order_id,))
     conn.commit()
+    updated = cur.rowcount > 0
     conn.close()
+    return updated
 
 
 def add_extension(rental_id: int, source: str, hours_added: int, created_ts: int):
