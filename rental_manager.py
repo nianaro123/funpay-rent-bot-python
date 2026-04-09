@@ -5,6 +5,9 @@ import re
 import secrets
 import sqlite3
 import time
+from collections import defaultdict
+
+from FunPayAPI.common.enums import SubCategoryTypes
 
 from storage import mark_order_confirmed, mark_order_refunded
 from lot_manager import LotManager
@@ -23,6 +26,9 @@ from storage import (
     get_active_rental_by_buyer,
     set_bonus_applied,
     add_extension,
+    list_goods,
+    get_auto_raise_enabled,
+    get_auto_raise_interval_sec,
 )
 from tg_notify import send_admin_notification
 from steam_session_worker import trigger_steam_sign_out_async
@@ -38,6 +44,7 @@ class RentalManager:
     def __init__(self, acc):
         self.acc = acc
         self.lot_manager = LotManager(acc)
+        self._last_auto_raise_ts = 0
 
     def generate_code(self, length: int = 8) -> str:
         return secrets.token_hex(8)[:length].upper()
@@ -379,8 +386,69 @@ class RentalManager:
         LOGGER.info("Бонус за отзыв применён для order_id=%s", rental["order_id"])
         return True
 
+    def _get_raise_targets(self) -> dict[int, list[int]]:
+        targets: dict[int, set[int]] = defaultdict(set)
+        goods = list_goods()
+
+        for good in goods:
+            lot_id = int(good["lot_id"]) if good["lot_id"] else 0
+            if not lot_id:
+                continue
+
+            try:
+                fields = self.lot_manager.get_lot_fields(lot_id)
+                node_id = int(fields.get("node_id") or 0)
+                if not node_id:
+                    continue
+
+                subcategory = self.acc.get_subcategory(SubCategoryTypes.COMMON, node_id)
+                if not subcategory:
+                    LOGGER.warning("Не удалось определить подкатегорию для lot_id=%s node_id=%s", lot_id, node_id)
+                    continue
+
+                category_id = subcategory.category.id
+                targets[category_id].add(node_id)
+            except Exception as e:
+                LOGGER.exception("Не удалось получить данные для автоподнятия lot_id=%s: %s", lot_id, e)
+
+        return {category_id: sorted(node_ids) for category_id, node_ids in targets.items()}
+
+    def _auto_raise_lots_if_needed(self, now: int) -> None:
+        auto_raise_enabled = get_auto_raise_enabled()
+        auto_raise_interval_sec = get_auto_raise_interval_sec()
+
+        if not auto_raise_enabled:
+            return
+        if auto_raise_interval_sec <= 0:
+            return
+        if self._last_auto_raise_ts and now - self._last_auto_raise_ts < auto_raise_interval_sec:
+            return
+
+        self._last_auto_raise_ts = now
+        targets = self._get_raise_targets()
+        if not targets:
+            LOGGER.info("Автоподнятие: цели не найдены (проверьте lot_id в базе goods).")
+            return
+
+        for category_id, node_ids in targets.items():
+            try:
+                self.acc.raise_lots(category_id, subcategories=node_ids)
+                LOGGER.info(
+                    "Автоподнятие выполнено: category_id=%s, subcategories=%s",
+                    category_id,
+                    node_ids,
+                )
+            except Exception as e:
+                LOGGER.exception(
+                    "Автоподнятие не удалось для category_id=%s, subcategories=%s: %s",
+                    category_id,
+                    node_ids,
+                    e,
+                )
+
     def tick(self) -> None:
         now = int(time.time())
+        self._auto_raise_lots_if_needed(now)
         rentals = list_active_rentals()
 
         for rental in rentals:
