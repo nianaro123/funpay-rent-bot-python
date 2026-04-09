@@ -92,7 +92,8 @@ class RentalManager:
         lines.extend([
             "",
             "💬 Если возникнут вопросы, напишите /help — я подскажу доступные команды.",
-            "⭐ Новым клиентам предусмотрен дополнительный час времени за положительный отзыв! Если вы хотите им воспользоваться - оставьте отзыв до окончания времени аренды.",
+            "⭐ За отзыв по заказу начисляется +1 час к аренде.",
+            "Важно: бонус можно получить только один раз на один заказ.",
         ])
         return "\n".join(lines)
 
@@ -253,8 +254,15 @@ class RentalManager:
             )
             return
 
+        bonus_marked = set_bonus_applied(order_id)
+        if not bonus_marked:
+            self.acc.send_message(
+                chat_id,
+                f"ℹ️ По заказу #{order_id} бонус за отзыв уже был начислен."
+            )
+            return
+
         extend_rental(order_id, self.REVIEW_BONUS_SECONDS)
-        set_bonus_applied(order_id)
         add_extension(rental["id"], "review_bonus", 1, int(time.time()))
 
         rental = get_rental_by_order_id(order_id)
@@ -358,8 +366,12 @@ class RentalManager:
             self.acc.send_message(chat_id, "ℹ️ Бонус за отзыв уже был использован.")
             return False
 
+        bonus_marked = set_bonus_applied(rental["order_id"])
+        if not bonus_marked:
+            self.acc.send_message(chat_id, "ℹ️ Бонус за отзыв уже был использован.")
+            return False
+
         extend_rental(rental["order_id"], self.REVIEW_BONUS_SECONDS)
-        set_bonus_applied(rental["order_id"])
         add_extension(rental["id"], "review_bonus", 1, int(time.time()))
 
         rental = get_rental_by_order_id(rental["order_id"])
