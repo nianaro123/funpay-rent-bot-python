@@ -76,3 +76,6 @@ STEAM_SIGN_OUT_WORKER_PATH = _get_path(
     "steam_sign_out_worker/steam_kick_all_sessions_worker.js",
 )
 STEAM_SIGN_OUT_TIMEOUT_SEC = _get_int("STEAM_SIGN_OUT_TIMEOUT_SEC", 420)
+
+AUTO_RAISE_ENABLED = _get_bool("AUTO_RAISE_ENABLED", False)
+AUTO_RAISE_INTERVAL_SEC = _get_int("AUTO_RAISE_INTERVAL_SEC", 120 * 60)

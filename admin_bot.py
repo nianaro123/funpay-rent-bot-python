@@ -38,6 +38,10 @@ from storage import (
     extend_rental,
     add_extension,
     close_rental,
+    get_auto_raise_enabled,
+    set_auto_raise_enabled,
+    get_auto_raise_interval_sec,
+    set_auto_raise_interval_sec,
 )
 from lot_manager import LotManager
 from steam_session_worker import trigger_steam_sign_out_async
@@ -52,6 +56,7 @@ LOGGER = logging.getLogger(__name__)
 ADD_LOT_LINK, ADD_LOGIN, ADD_PASSWORD, ADD_NOTE, ADD_SHARED_SECRET = range(5)
 EDIT_GOOD_ID, EDIT_LOT_LINK, EDIT_LOGIN, EDIT_PASSWORD, EDIT_NOTE, EDIT_SHARED_SECRET = range(5, 11)
 CLOSE_RENT_ROW = 11
+AUTO_RAISE_MENU, AUTO_RAISE_INTERVAL_INPUT = range(12, 14)
 
 FUNPAY_ACC = None
 
@@ -63,6 +68,11 @@ BTN_FREE_GOODS = "🟢 Free Goods"
 BTN_STATS = "💰 Stats"
 BTN_CLOSE_RENTAL = "⛔ Close Rental"
 BTN_UPDATE_TITLES = "🔄 Update Titles"
+BTN_AUTO_RAISE = "🚀 Auto Raise Lots"
+BTN_AUTO_RAISE_ENABLE = "✅ Включить"
+BTN_AUTO_RAISE_DISABLE = "⛔ Отключить"
+BTN_AUTO_RAISE_SET_TIME = "⏱ Задать время"
+BTN_AUTO_RAISE_BACK = "⬅️ Назад"
 
 
 def get_main_keyboard() -> ReplyKeyboardMarkup:
@@ -72,8 +82,32 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
             [BTN_LIST_GOODS, BTN_ACTIVE_RENTALS],
             [BTN_FREE_GOODS, BTN_STATS],
             [BTN_CLOSE_RENTAL, BTN_UPDATE_TITLES],
+            [BTN_AUTO_RAISE],
         ],
         resize_keyboard=True,
+    )
+
+
+def get_auto_raise_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [BTN_AUTO_RAISE_ENABLE, BTN_AUTO_RAISE_DISABLE],
+            [BTN_AUTO_RAISE_SET_TIME, BTN_AUTO_RAISE_BACK],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def format_auto_raise_status() -> str:
+    enabled = get_auto_raise_enabled()
+    interval_sec = get_auto_raise_interval_sec()
+    interval_min = max(1, interval_sec // 60)
+    status = "включено" if enabled else "отключено"
+    return (
+        "🚀 Настройки автоподнятия лотов:\n"
+        f"Статус: {status}\n"
+        f"Интервал: {interval_min} мин.\n\n"
+        "Выберите действие:"
     )
 
 
@@ -173,6 +207,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{BTN_STATS} — статистика за всё время\n"
         f"{BTN_CLOSE_RENTAL} — вручную закрыть аренду\n\n"
         f"{BTN_UPDATE_TITLES} — обновить title всех лотов из FunPay\n\n"
+        f"{BTN_AUTO_RAISE} — меню автоподнятия лотов\n\n"
         "Команды:\n"
         "/goods — список товаров\n"
         "/free — число свободных товаров\n"
@@ -187,6 +222,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/enablegood good_id\n"
         "/delgood good_id\n"
         "/updatetitles — подтянуть актуальные title всех лотов из FunPay\n"
+        "/autoraise — меню автоподнятия лотов\n"
         "/stats day|week|month|all — доход по подтверждённым заказам\n"
         "/cancel — отменить текущий мастер"
     )
@@ -224,6 +260,9 @@ async def admin_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == BTN_UPDATE_TITLES:
         return await updatetitles_cmd(update, context)
 
+    if text == BTN_AUTO_RAISE:
+        return await autoraise_menu_start(update, context)
+
 
 async def addgood_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await addgood_start(update, context)
@@ -244,6 +283,89 @@ async def stats_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def updatetitles_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await updatetitles_cmd(update, context)
+
+
+async def autoraise_menu_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return ConversationHandler.END
+
+    await update.message.reply_text(
+        format_auto_raise_status(),
+        reply_markup=get_auto_raise_keyboard(),
+    )
+    return AUTO_RAISE_MENU
+
+
+async def autoraise_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await autoraise_menu_start(update, context)
+
+
+async def autoraise_enable(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return ConversationHandler.END
+
+    set_auto_raise_enabled(True)
+    await update.message.reply_text(
+        f"✅ Автоподнятие включено.\n\n{format_auto_raise_status()}",
+        reply_markup=get_auto_raise_keyboard(),
+    )
+    return AUTO_RAISE_MENU
+
+
+async def autoraise_disable(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return ConversationHandler.END
+
+    set_auto_raise_enabled(False)
+    await update.message.reply_text(
+        f"⛔ Автоподнятие отключено.\n\n{format_auto_raise_status()}",
+        reply_markup=get_auto_raise_keyboard(),
+    )
+    return AUTO_RAISE_MENU
+
+
+async def autoraise_set_time_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return ConversationHandler.END
+
+    await update.message.reply_text(
+        "Введите интервал автоподнятия в минутах.\n"
+        "По умолчанию: 120.\n"
+        "Пример: 45",
+        reply_markup=get_auto_raise_keyboard(),
+    )
+    return AUTO_RAISE_INTERVAL_INPUT
+
+
+async def autoraise_set_time_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return ConversationHandler.END
+
+    raw = (update.message.text or "").strip()
+    try:
+        minutes = int(raw)
+    except ValueError:
+        await update.message.reply_text("Введите целое число минут. Например: 120")
+        return AUTO_RAISE_INTERVAL_INPUT
+
+    if minutes <= 0:
+        await update.message.reply_text("Интервал должен быть больше 0 минут.")
+        return AUTO_RAISE_INTERVAL_INPUT
+
+    set_auto_raise_interval_sec(minutes * 60)
+    await update.message.reply_text(
+        f"✅ Интервал автоподнятия установлен: {minutes} мин.\n\n{format_auto_raise_status()}",
+        reply_markup=get_auto_raise_keyboard(),
+    )
+    return AUTO_RAISE_MENU
+
+
+async def autoraise_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return ConversationHandler.END
+
+    await update.message.reply_text("Возврат в главное меню.", reply_markup=get_main_keyboard())
+    return ConversationHandler.END
 
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1112,6 +1234,29 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel_cmd)],
     )
 
+    autoraise_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("autoraise", autoraise_cmd),
+            MessageHandler(filters.Regex(f"^{re.escape(BTN_AUTO_RAISE)}$"), autoraise_menu_start),
+        ],
+        states={
+            AUTO_RAISE_MENU: [
+                MessageHandler(filters.Regex(f"^{re.escape(BTN_AUTO_RAISE_ENABLE)}$"), autoraise_enable),
+                MessageHandler(filters.Regex(f"^{re.escape(BTN_AUTO_RAISE_DISABLE)}$"), autoraise_disable),
+                MessageHandler(filters.Regex(f"^{re.escape(BTN_AUTO_RAISE_SET_TIME)}$"), autoraise_set_time_prompt),
+                MessageHandler(filters.Regex(f"^{re.escape(BTN_AUTO_RAISE_BACK)}$"), autoraise_back),
+            ],
+            AUTO_RAISE_INTERVAL_INPUT: [
+                MessageHandler(filters.Regex(f"^{re.escape(BTN_AUTO_RAISE_ENABLE)}$"), autoraise_enable),
+                MessageHandler(filters.Regex(f"^{re.escape(BTN_AUTO_RAISE_DISABLE)}$"), autoraise_disable),
+                MessageHandler(filters.Regex(f"^{re.escape(BTN_AUTO_RAISE_SET_TIME)}$"), autoraise_set_time_prompt),
+                MessageHandler(filters.Regex(f"^{re.escape(BTN_AUTO_RAISE_BACK)}$"), autoraise_back),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, autoraise_set_time_input),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_cmd)],
+    )
+
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("goods", goods_cmd))
     app.add_handler(CommandHandler("free", free_cmd))
@@ -1125,6 +1270,7 @@ def main():
     app.add_handler(addgood_conv)
     app.add_handler(editgood_conv)
     app.add_handler(closerent_conv)
+    app.add_handler(autoraise_conv)
     app.add_handler(CommandHandler("disablegood", disablegood_cmd))
     app.add_handler(CommandHandler("enablegood", enablegood_cmd))
     app.add_handler(CommandHandler("delgood", delgood_cmd))

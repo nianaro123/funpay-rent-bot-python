@@ -20,3 +20,6 @@ STEAM_SIGN_OUT_ENABLED = True
 STEAM_SIGN_OUT_NODE_BIN = "node"
 STEAM_SIGN_OUT_WORKER_PATH = "steam_sign_out_worker/steam_kick_all_sessions_worker.js"
 STEAM_SIGN_OUT_TIMEOUT_SEC = 420
+
+AUTO_RAISE_ENABLED = False
+AUTO_RAISE_INTERVAL_SEC = 7200

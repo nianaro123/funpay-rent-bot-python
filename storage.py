@@ -1,7 +1,7 @@
 import re
 import sqlite3
 from pathlib import Path
-from settings import DB_PATH
+from settings import DB_PATH, AUTO_RAISE_ENABLED, AUTO_RAISE_INTERVAL_SEC
 
 
 
@@ -143,8 +143,69 @@ def init_db():
     )
     """)
 
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS bot_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )
+    """)
+
+    conn.execute("""
+        INSERT OR IGNORE INTO bot_settings(key, value)
+        VALUES ('auto_raise_enabled', ?)
+    """, ("1" if AUTO_RAISE_ENABLED else "0",))
+    conn.execute("""
+        INSERT OR IGNORE INTO bot_settings(key, value)
+        VALUES ('auto_raise_interval_sec', ?)
+    """, (str(int(AUTO_RAISE_INTERVAL_SEC)),))
+
     conn.commit()
     conn.close()
+
+
+def get_bot_setting(key: str, default: str | None = None) -> str | None:
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT value
+        FROM bot_settings
+        WHERE key = ?
+        LIMIT 1
+    """, (key,)).fetchone()
+    conn.close()
+    return row["value"] if row else default
+
+
+def set_bot_setting(key: str, value: str) -> None:
+    conn = get_connection()
+    conn.execute("""
+        INSERT INTO bot_settings(key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    """, (key, value))
+    conn.commit()
+    conn.close()
+
+
+def get_auto_raise_enabled(default: bool = AUTO_RAISE_ENABLED) -> bool:
+    raw = (get_bot_setting("auto_raise_enabled", "1" if default else "0") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def set_auto_raise_enabled(enabled: bool) -> None:
+    set_bot_setting("auto_raise_enabled", "1" if enabled else "0")
+
+
+def get_auto_raise_interval_sec(default: int = AUTO_RAISE_INTERVAL_SEC) -> int:
+    raw = (get_bot_setting("auto_raise_interval_sec", str(int(default))) or "").strip()
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return int(default)
+    return parsed if parsed > 0 else int(default)
+
+
+def set_auto_raise_interval_sec(interval_sec: int) -> None:
+    set_bot_setting("auto_raise_interval_sec", str(int(interval_sec)))
 
 
 def add_good(
