@@ -25,6 +25,9 @@ LOGGER = logging.getLogger(__name__)
 
 class AutoReplyBot:
     ADMIN_REQUEST_COOLDOWN = 5 * 60
+    # У FunPay есть ограничение на размер одного сообщения.
+    # Делаем лимит ниже фактического, чтобы не упираться в URL-encoding / спецсимволы.
+    MAX_FUNPAY_MESSAGE_LEN = 1500
 
     def __init__(self, acc):
         self.acc = acc
@@ -52,6 +55,45 @@ class AutoReplyBot:
     @staticmethod
     def _is_refund_notice(text_lower: str) -> bool:
         return "вернул деньги покупателю" in text_lower and "заказ" in text_lower
+
+    def _send_long_message(self, chat_id: str, lines: list[str]) -> None:
+        chunks: list[str] = []
+        current_chunk: list[str] = []
+        current_len = 0
+
+        for line in lines:
+            line_len = len(line)
+            separator_len = 1 if current_chunk else 0  # перевод строки при join
+
+            # Если одна строка длиннее лимита — аккуратно режем ее по частям.
+            if line_len > self.MAX_FUNPAY_MESSAGE_LEN:
+                if current_chunk:
+                    chunks.append("\n".join(current_chunk).strip())
+                    current_chunk = []
+                    current_len = 0
+
+                start = 0
+                while start < line_len:
+                    part = line[start : start + self.MAX_FUNPAY_MESSAGE_LEN]
+                    chunks.append(part.strip())
+                    start += self.MAX_FUNPAY_MESSAGE_LEN
+                continue
+
+            if current_len + separator_len + line_len > self.MAX_FUNPAY_MESSAGE_LEN:
+                chunks.append("\n".join(current_chunk).strip())
+                current_chunk = [line]
+                current_len = line_len
+                continue
+
+            current_chunk.append(line)
+            current_len += separator_len + line_len
+
+        if current_chunk:
+            chunks.append("\n".join(current_chunk).strip())
+
+        for chunk in chunks:
+            if chunk:
+                self.acc.send_message(chat_id, chunk)
 
     def handle_new_message(self, event: NewMessageEvent):
         msg = event.message
@@ -163,7 +205,7 @@ class AutoReplyBot:
                     "",
                 ])
 
-            self.acc.send_message(chat_id, "\n".join(lines).strip())
+            self._send_long_message(chat_id, lines)
             return
 
         if cmd == "/admin":
