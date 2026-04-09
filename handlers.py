@@ -1,6 +1,7 @@
 # handlers.py
 import logging
 import time
+from urllib.parse import quote_plus
 
 from FunPayAPI.updater.events import NewMessageEvent
 
@@ -28,6 +29,10 @@ class AutoReplyBot:
     # У FunPay есть ограничение на размер одного сообщения.
     # Делаем лимит ниже фактического, чтобы не упираться в URL-encoding / спецсимволы.
     MAX_FUNPAY_MESSAGE_LEN = 1500
+    # Лимит для URL-encoded сообщения в request[data][content].
+    # Эмодзи/спецсимволы резко увеличивают размер после quote_plus,
+    # поэтому ограничиваем не только "чистую" длину строки.
+    MAX_FUNPAY_ENCODED_MESSAGE_LEN = 3500
 
     def __init__(self, acc):
         self.acc = acc
@@ -57,36 +62,60 @@ class AutoReplyBot:
         return "вернул деньги покупателю" in text_lower and "заказ" in text_lower
 
     def _send_long_message(self, chat_id: str, lines: list[str]) -> None:
+        def _encoded_len(value: str) -> int:
+            return len(quote_plus(value, safe=""))
+
+        def _split_long_line(line: str) -> list[str]:
+            if not line:
+                return [line]
+
+            parts: list[str] = []
+            current: list[str] = []
+
+            for ch in line:
+                current.append(ch)
+                current_value = "".join(current)
+                if (
+                    len(current_value) > self.MAX_FUNPAY_MESSAGE_LEN
+                    or _encoded_len(current_value) > self.MAX_FUNPAY_ENCODED_MESSAGE_LEN
+                ):
+                    # Отбрасываем символ в следующую часть, чтобы текущая точно влезала.
+                    current.pop()
+                    if current:
+                        parts.append("".join(current))
+                    current = [ch]
+
+            if current:
+                parts.append("".join(current))
+
+            return parts
+
         chunks: list[str] = []
         current_chunk: list[str] = []
         current_len = 0
+        current_encoded_len = 0
 
         for line in lines:
-            line_len = len(line)
-            separator_len = 1 if current_chunk else 0  # перевод строки при join
+            for line_part in _split_long_line(line):
+                line_len = len(line_part)
+                line_encoded_len = _encoded_len(line_part)
+                separator_len = 1 if current_chunk else 0  # перевод строки при join
+                separator_encoded_len = _encoded_len("\n") if current_chunk else 0
 
-            # Если одна строка длиннее лимита — аккуратно режем ее по частям.
-            if line_len > self.MAX_FUNPAY_MESSAGE_LEN:
-                if current_chunk:
+                if (
+                    current_len + separator_len + line_len > self.MAX_FUNPAY_MESSAGE_LEN
+                    or current_encoded_len + separator_encoded_len + line_encoded_len
+                    > self.MAX_FUNPAY_ENCODED_MESSAGE_LEN
+                ):
                     chunks.append("\n".join(current_chunk).strip())
-                    current_chunk = []
-                    current_len = 0
+                    current_chunk = [line_part]
+                    current_len = line_len
+                    current_encoded_len = line_encoded_len
+                    continue
 
-                start = 0
-                while start < line_len:
-                    part = line[start : start + self.MAX_FUNPAY_MESSAGE_LEN]
-                    chunks.append(part.strip())
-                    start += self.MAX_FUNPAY_MESSAGE_LEN
-                continue
-
-            if current_len + separator_len + line_len > self.MAX_FUNPAY_MESSAGE_LEN:
-                chunks.append("\n".join(current_chunk).strip())
-                current_chunk = [line]
-                current_len = line_len
-                continue
-
-            current_chunk.append(line)
-            current_len += separator_len + line_len
+                current_chunk.append(line_part)
+                current_len += separator_len + line_len
+                current_encoded_len += separator_encoded_len + line_encoded_len
 
         if current_chunk:
             chunks.append("\n".join(current_chunk).strip())
