@@ -62,6 +62,7 @@ BTN_ACTIVE_RENTALS = "📊 Active Rentals"
 BTN_FREE_GOODS = "🟢 Free Goods"
 BTN_STATS = "💰 Stats"
 BTN_CLOSE_RENTAL = "⛔ Close Rental"
+BTN_UPDATE_TITLES = "🔄 Update Titles"
 
 
 def get_main_keyboard() -> ReplyKeyboardMarkup:
@@ -70,7 +71,7 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
             [BTN_ADD_GOOD, BTN_EDIT_GOOD],
             [BTN_LIST_GOODS, BTN_ACTIVE_RENTALS],
             [BTN_FREE_GOODS, BTN_STATS],
-            [BTN_CLOSE_RENTAL],
+            [BTN_CLOSE_RENTAL, BTN_UPDATE_TITLES],
         ],
         resize_keyboard=True,
     )
@@ -171,6 +172,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{BTN_FREE_GOODS} — число свободных товаров\n"
         f"{BTN_STATS} — статистика за всё время\n"
         f"{BTN_CLOSE_RENTAL} — вручную закрыть аренду\n\n"
+        f"{BTN_UPDATE_TITLES} — обновить title всех лотов из FunPay\n\n"
         "Команды:\n"
         "/goods — список товаров\n"
         "/free — число свободных товаров\n"
@@ -184,6 +186,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/disablegood good_id\n"
         "/enablegood good_id\n"
         "/delgood good_id\n"
+        "/updatetitles — подтянуть актуальные title всех лотов из FunPay\n"
         "/stats day|week|month|all — доход по подтверждённым заказам\n"
         "/cancel — отменить текущий мастер"
     )
@@ -218,6 +221,9 @@ async def admin_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == BTN_CLOSE_RENTAL:
         return await closerent_start(update, context)
 
+    if text == BTN_UPDATE_TITLES:
+        return await updatetitles_cmd(update, context)
+
 
 async def addgood_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await addgood_start(update, context)
@@ -234,6 +240,10 @@ async def free_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stats_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.args = ["all"]
     return await stats_cmd(update, context)
+
+
+async def updatetitles_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await updatetitles_cmd(update, context)
 
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -975,6 +985,65 @@ async def delgood_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def updatetitles_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return
+
+    if FUNPAY_ACC is None:
+        await update.message.reply_text("❌ FunPay аккаунт не инициализирован. Перезапусти бота.")
+        return
+
+    goods = list_goods()
+    if not goods:
+        await update.message.reply_text("Товаров в базе нет.")
+        return
+
+    updated_count = 0
+    unchanged_count = 0
+    failed_count = 0
+
+    lines = ["🔄 Обновление title лотов:"]
+
+    for g in goods:
+        good_id = g["id"]
+        lot_id = g["lot_id"]
+        old_title = (g["title"] or "").strip()
+
+        try:
+            new_title = fetch_lot_title(lot_id)
+        except Exception as e:
+            failed_count += 1
+            LOGGER.exception("Failed to refresh title for good_id=%s lot_id=%s: %s", good_id, lot_id, e)
+            lines.append(f"❌ good_id={good_id}, lot_id={lot_id}: не удалось получить title.")
+            continue
+
+        if new_title == old_title:
+            unchanged_count += 1
+            lines.append(f"➖ good_id={good_id}, lot_id={lot_id}: без изменений.")
+            continue
+
+        ok = update_good(good_id=good_id, title=new_title)
+        if not ok:
+            failed_count += 1
+            lines.append(f"❌ good_id={good_id}, lot_id={lot_id}: не удалось обновить в БД.")
+            continue
+
+        updated_count += 1
+        lines.append(
+            f"✅ good_id={good_id}, lot_id={lot_id}: title обновлён.\n"
+            f"Было: {old_title}\n"
+            f"Стало: {new_title}"
+        )
+
+    lines.append(
+        "\nИтог:\n"
+        f"Обновлено: {updated_count}\n"
+        f"Без изменений: {unchanged_count}\n"
+        f"Ошибок: {failed_count}"
+    )
+    await update.message.reply_text("\n".join(lines))
+
+
 def main():
     init_db()
     init_funpay_account()
@@ -1052,6 +1121,7 @@ def main():
     app.add_handler(CommandHandler("closerent", closerent_cmd))
     app.add_handler(CommandHandler("closerentrow", closerentrow_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
+    app.add_handler(CommandHandler("updatetitles", updatetitles_cmd))
     app.add_handler(addgood_conv)
     app.add_handler(editgood_conv)
     app.add_handler(closerent_conv)
@@ -1063,6 +1133,7 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(f"^{re.escape(BTN_ACTIVE_RENTALS)}$"), rentals_cmd))
     app.add_handler(MessageHandler(filters.Regex(f"^{re.escape(BTN_FREE_GOODS)}$"), free_button))
     app.add_handler(MessageHandler(filters.Regex(f"^{re.escape(BTN_STATS)}$"), stats_button))
+    app.add_handler(MessageHandler(filters.Regex(f"^{re.escape(BTN_UPDATE_TITLES)}$"), updatetitles_button))
 
     print("Telegram admin bot started")
     app.run_polling()
