@@ -74,6 +74,8 @@ BTN_AUTO_RAISE_DISABLE = "⛔ Отключить"
 BTN_AUTO_RAISE_SET_TIME = "⏱ Задать время"
 BTN_AUTO_RAISE_BACK = "⬅️ Назад"
 
+UNSAFE_CHAT_CHARS_RE = re.compile(r"[\u200b\u200c\u200d\u2060\u2063\u2064\ufeff]")
+
 
 def get_main_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
@@ -148,6 +150,51 @@ def init_funpay_account():
     except Exception as e:
         FUNPAY_ACC = None
         LOGGER.exception("Failed to init FunPay account in admin_bot.py: %s", e)
+
+
+def _sanitize_chat_message(text: str) -> str:
+    safe_text = UNSAFE_CHAT_CHARS_RE.sub("", text or "")
+    safe_text = safe_text.strip()
+    return safe_text
+
+
+def _send_buyer_message_with_fallback(chat_id: int | str, text: str) -> bool:
+    if FUNPAY_ACC is None:
+        return False
+
+    original = (text or "").strip()
+    sanitized = _sanitize_chat_message(original)
+    fallback = f"Продавец вручную продлил аренду. Актуальное время: {sanitized}"
+    fallback = _sanitize_chat_message(fallback)
+
+    attempts = [
+        ("original", original),
+        ("sanitized", sanitized),
+        ("fallback", fallback),
+    ]
+
+    for attempt_name, attempt_text in attempts:
+        if not attempt_text:
+            continue
+        try:
+            FUNPAY_ACC.send_message(chat_id, attempt_text)
+            if attempt_name != "original":
+                LOGGER.warning(
+                    "Buyer message sent via %s attempt for chat_id=%s",
+                    attempt_name,
+                    chat_id,
+                )
+            return True
+        except Exception as e:
+            LOGGER.warning(
+                "Buyer message send failed (%s) for chat_id=%s: %s",
+                attempt_name,
+                chat_id,
+                e,
+            )
+            continue
+
+    return False
 
 
 def is_admin(update: Update) -> bool:
@@ -646,17 +693,13 @@ async def extendrent_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     updated_rental = get_rental_by_order_id(order_id)
     remaining_text = format_remaining_time(updated_rental)
 
-    buyer_msg_sent = False
-    if FUNPAY_ACC is not None:
-        try:
-            FUNPAY_ACC.send_message(
-                updated_rental["chat_id"],
-                f"✅ Продавец вручную продлил вашу аренду по заказу #{order_id} на {hours} ч.\n"
-                f"⏱ Текущее оставшееся время: {remaining_text}"
-            )
-            buyer_msg_sent = True
-        except Exception as e:
-            LOGGER.exception("Failed to send buyer message for manual extension order_id=%s: %s", order_id, e)
+    buyer_msg_sent = _send_buyer_message_with_fallback(
+        updated_rental["chat_id"],
+        (
+            f"✅ Продавец вручную продлил вашу аренду по заказу #{order_id} на {hours} ч.\n"
+            f"⏱ Текущее оставшееся время: {remaining_text}"
+        ),
+    )
 
     text = (
         f"✅ Заказ #{order_id} продлён на {hours} ч.\n"
@@ -719,17 +762,13 @@ async def extendrentrow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     updated_rental = get_rental_by_order_id(order_id)
     remaining_text = format_remaining_time(updated_rental)
 
-    buyer_msg_sent = False
-    if FUNPAY_ACC is not None:
-        try:
-            FUNPAY_ACC.send_message(
-                updated_rental["chat_id"],
-                f"✅ Продавец вручную продлил вашу аренду по заказу #{order_id} на {hours} ч.\n"
-                f"⏱ Текущее оставшееся время: {remaining_text}"
-            )
-            buyer_msg_sent = True
-        except Exception as e:
-            LOGGER.exception("Failed to send buyer message for manual extension by row order_id=%s: %s", order_id, e)
+    buyer_msg_sent = _send_buyer_message_with_fallback(
+        updated_rental["chat_id"],
+        (
+            f"✅ Продавец вручную продлил вашу аренду по заказу #{order_id} на {hours} ч.\n"
+            f"⏱ Текущее оставшееся время: {remaining_text}"
+        ),
+    )
 
     text = (
         f"✅ Строка {row_num} / заказ #{order_id} продлён на {hours} ч.\n"
