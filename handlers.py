@@ -164,14 +164,6 @@ class AutoReplyBot:
             return
 
         try:
-            if getattr(msg, "by_bot", False):
-                LOGGER.debug("Пропуск сообщения бота chat_id=%s msg_id=%s", chat_id, msg_id)
-                return
-
-            if author_id == self.acc.id:
-                LOGGER.debug("Пропуск собственного сообщения chat_id=%s msg_id=%s", chat_id, msg_id)
-                return
-
             # Системные сообщения определяем по тексту, а не по author_id == 0
             if self._is_paid_order_notice(low):
                 LOGGER.info("Обработка уведомления об оплате chat_id=%s msg_id=%s", chat_id, msg_id)
@@ -191,6 +183,14 @@ class AutoReplyBot:
             if self._is_refund_notice(low):
                 LOGGER.info("Обработка уведомления о возврате chat_id=%s msg_id=%s", chat_id, msg_id)
                 self.rm.handle_refund_notice(chat_id, text)
+                return
+
+            if getattr(msg, "by_bot", False):
+                LOGGER.debug("Пропуск сообщения бота chat_id=%s msg_id=%s", chat_id, msg_id)
+                return
+
+            if author_id == self.acc.id:
+                LOGGER.debug("Пропуск собственного сообщения chat_id=%s msg_id=%s", chat_id, msg_id)
                 return
 
             # Команды клиента
