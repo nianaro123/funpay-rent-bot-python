@@ -74,7 +74,10 @@ BTN_AUTO_RAISE_DISABLE = "⛔ Отключить"
 BTN_AUTO_RAISE_SET_TIME = "⏱ Задать время"
 BTN_AUTO_RAISE_BACK = "⬅️ Назад"
 
-UNSAFE_CHAT_CHARS_RE = re.compile(r"[\u200b\u200c\u200d\u2060\u2063\u2064\ufeff]")
+UNSAFE_CHAT_CHARS_RE = re.compile(r"[\u0000-\u001f\u007f\u200b\u200c\u200d\u2060\u2063\u2064\ufeff]")
+SAFE_FUNPAY_CHAT_CHARS_RE = re.compile(r"[^0-9A-Za-zА-Яа-яЁё\s\.\,\!\?\:\;\-\+\#\(\)\/]")
+MULTISPACE_RE = re.compile(r"\s+")
+MAX_FUNPAY_MESSAGE_LEN = 450
 
 
 def get_main_keyboard() -> ReplyKeyboardMarkup:
@@ -158,18 +161,26 @@ def _sanitize_chat_message(text: str) -> str:
     return safe_text
 
 
+def _to_funpay_plain_text(text: str) -> str:
+    text = _sanitize_chat_message(text)
+    text = SAFE_FUNPAY_CHAT_CHARS_RE.sub(" ", text)
+    text = MULTISPACE_RE.sub(" ", text).strip()
+    return text[:MAX_FUNPAY_MESSAGE_LEN].strip()
+
+
 def _send_buyer_message_with_fallback(chat_id: int | str, text: str) -> bool:
     if FUNPAY_ACC is None:
         return False
 
     original = (text or "").strip()
     sanitized = _sanitize_chat_message(original)
-    fallback = f"Продавец вручную продлил аренду. Актуальное время: {sanitized}"
-    fallback = _sanitize_chat_message(fallback)
+    plain = _to_funpay_plain_text(sanitized)
+    fallback = "Продавец вручную продлил аренду. Проверьте оставшееся время в чате заказа."
 
     attempts = [
         ("original", original),
         ("sanitized", sanitized),
+        ("plain", plain),
         ("fallback", fallback),
     ]
 
