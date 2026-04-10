@@ -797,29 +797,25 @@ def get_confirmed_income_by_good(start_ts: int | None = None):
         rows = conn.execute("""
             SELECT
                 good_id,
-                login_snapshot,
-                good_title_snapshot,
-                marker,
+                TRIM(COALESCE(login_snapshot, '')) AS login_snapshot,
                 COUNT(*) AS orders_count,
                 COALESCE(SUM(amount_rub), 0) AS total_rub
             FROM order_events
             WHERE status = 'confirmed'
-            GROUP BY good_id, login_snapshot, good_title_snapshot, marker
+            GROUP BY good_id, TRIM(COALESCE(login_snapshot, ''))
             ORDER BY total_rub DESC
         """).fetchall()
     else:
         rows = conn.execute("""
             SELECT
                 good_id,
-                login_snapshot,
-                good_title_snapshot,
-                marker,
+                TRIM(COALESCE(login_snapshot, '')) AS login_snapshot,
                 COUNT(*) AS orders_count,
                 COALESCE(SUM(amount_rub), 0) AS total_rub
             FROM order_events
             WHERE status = 'confirmed'
               AND confirmed_ts >= ?
-            GROUP BY good_id, login_snapshot, good_title_snapshot, marker
+            GROUP BY good_id, TRIM(COALESCE(login_snapshot, ''))
             ORDER BY total_rub DESC
         """, (start_ts,)).fetchall()
 
