@@ -14,6 +14,7 @@ from lot_manager import LotManager
 from steam_guard import generate_steam_guard_code
 from storage import (
     get_good_by_marker,
+    get_good_by_id,
     count_free_goods,
     create_rental,
     list_active_rentals,
@@ -100,7 +101,6 @@ class RentalManager:
             "",
             "💬 Если возникнут вопросы, напишите /help — я подскажу доступные команды.",
             "⭐ За отзыв по заказу начисляется +1 час к аренде.",
-            "Важно: бонус можно получить только один раз на один заказ.",
         ])
         return "\n".join(lines)
 
@@ -152,7 +152,56 @@ class RentalManager:
 
         good = get_good_by_marker(good_marker)
         if not good:
-            self.acc.send_message(chat_id, f"❌ В базе не найден товар для маркера {good_marker}")
+            return None
+
+        return self._issue_good(
+            order_id=order_id,
+            good=good,
+            buyer_id=buyer_id,
+            buyer_username=buyer_username,
+            chat_id=chat_id,
+            hours=hours,
+        )
+
+    def issue_good_by_id(
+        self,
+        order_id: str,
+        good_id: int,
+        buyer_id: int | None,
+        buyer_username: str | None,
+        chat_id: int | str,
+        hours: int,
+    ):
+        existing = get_rental_by_order_id(order_id)
+        if existing:
+            LOGGER.info("Заказ %s уже обработан", order_id)
+            return None
+
+        good = get_good_by_id(good_id)
+        if not good:
+            return None
+
+        return self._issue_good(
+            order_id=order_id,
+            good=good,
+            buyer_id=buyer_id,
+            buyer_username=buyer_username,
+            chat_id=chat_id,
+            hours=hours,
+        )
+
+    def _issue_good(
+        self,
+        order_id: str,
+        good,
+        buyer_id: int | None,
+        buyer_username: str | None,
+        chat_id: int | str,
+        hours: int,
+    ):
+        existing = get_rental_by_order_id(order_id)
+        if existing:
+            LOGGER.info("Заказ %s уже обработан", order_id)
             return None
 
         start_ts = int(time.time())

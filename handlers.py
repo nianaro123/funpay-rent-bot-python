@@ -17,7 +17,7 @@ from storage import (
     mark_chat_welcomed,
 )
 from settings import WELCOME_TEXT, HELP_TEXT
-from order_handler import handle_paid_order_message
+from order_handler import handle_paid_order_message, try_handle_account_selection_reply
 from steam_guard import generate_steam_guard_code
 from tg_notify import send_admin_notification
 
@@ -192,6 +192,18 @@ class AutoReplyBot:
             if author_id == self.acc.id:
                 LOGGER.debug("Пропуск собственного сообщения chat_id=%s msg_id=%s", chat_id, msg_id)
                 return
+
+            if author_id is not None:
+                selection_handled = try_handle_account_selection_reply(
+                    self.acc,
+                    self.rm,
+                    chat_id=chat_id,
+                    buyer_id=author_id,
+                    buyer_username=author,
+                    text=text,
+                )
+                if selection_handled:
+                    return
 
             # Команды клиента
             if text.startswith("/"):
