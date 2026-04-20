@@ -144,6 +144,19 @@ def init_db():
     """)
 
     conn.execute("""
+    CREATE TABLE IF NOT EXISTS account_selection_requests (
+        order_id TEXT PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        buyer_id INTEGER NOT NULL,
+        buyer_username TEXT,
+        hours INTEGER NOT NULL,
+        amount_rub REAL NOT NULL DEFAULT 0,
+        marker TEXT,
+        created_ts INTEGER NOT NULL
+    )
+    """)
+
+    conn.execute("""
     CREATE TABLE IF NOT EXISTS bot_settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -507,6 +520,78 @@ def get_rental_by_order_id(order_id: str):
     """, (order_id,)).fetchone()
     conn.close()
     return row
+
+
+def create_account_selection_request(
+    order_id: str,
+    chat_id: str,
+    buyer_id: int,
+    buyer_username: str | None,
+    hours: int,
+    amount_rub: float,
+    marker: str | None,
+    created_ts: int,
+):
+    conn = get_connection()
+    try:
+        conn.execute("""
+            INSERT INTO account_selection_requests(
+                order_id, chat_id, buyer_id, buyer_username, hours, amount_rub, marker, created_ts
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(order_id) DO UPDATE SET
+                chat_id = excluded.chat_id,
+                buyer_id = excluded.buyer_id,
+                buyer_username = excluded.buyer_username,
+                hours = excluded.hours,
+                amount_rub = excluded.amount_rub,
+                marker = excluded.marker,
+                created_ts = excluded.created_ts
+        """, (
+            order_id, str(chat_id), buyer_id, buyer_username, hours, amount_rub, marker, created_ts
+        ))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_latest_account_selection_request_by_buyer(buyer_id: int):
+    conn = get_connection()
+    try:
+        row = conn.execute("""
+            SELECT *
+            FROM account_selection_requests
+            WHERE buyer_id = ?
+            ORDER BY created_ts DESC
+            LIMIT 1
+        """, (buyer_id,)).fetchone()
+        return row
+    finally:
+        conn.close()
+
+
+def delete_account_selection_request(order_id: str) -> None:
+    conn = get_connection()
+    try:
+        conn.execute("""
+            DELETE FROM account_selection_requests
+            WHERE order_id = ?
+        """, (order_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_account_selection_requests_by_buyer(buyer_id: int) -> None:
+    conn = get_connection()
+    try:
+        conn.execute("""
+            DELETE FROM account_selection_requests
+            WHERE buyer_id = ?
+        """, (buyer_id,))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_rental_with_good_by_order_id(order_id: str):

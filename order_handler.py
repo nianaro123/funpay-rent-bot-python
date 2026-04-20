@@ -13,6 +13,11 @@ from storage import (
     get_rental_by_order_id,
     get_active_rental_by_buyer_and_marker,
     log_order_event,
+    list_goods,
+    create_account_selection_request,
+    get_latest_account_selection_request_by_buyer,
+    delete_account_selection_request,
+    delete_account_selection_requests_by_buyer,
 )
 from tg_notify import send_admin_notification
 
@@ -192,6 +197,114 @@ def resolve_order_meta(acc, order_id: str, text: str) -> tuple[str | None, int |
     return marker, hours
 
 
+def _build_free_accounts_list(marker: str | None = None):
+    goods = list_goods()
+    free_goods = [g for g in goods if g["is_active"] and not g["is_busy"]]
+    if marker:
+        free_goods = [g for g in free_goods if (g["marker"] or "").strip() == marker]
+    return free_goods
+
+
+def _format_account_selection_message(order_id: str, marker: str | None, free_goods: list) -> str:
+    lines = [
+        f"⚠️ Вы оплатили заказ #{order_id} для аккаунта, который уже занят.",
+        "Выберите свободный аккаунт из этой же категории и напишите в чат только цифру нужного аккаунта.",
+        "",
+    ]
+    if marker:
+        lines.append(f"Категория: {marker}")
+        lines.append("")
+    for i, g in enumerate(free_goods, start=1):
+        lines.append(f"{i}. {g['title']}")
+    return "\n".join(lines)
+
+
+def try_handle_account_selection_reply(acc, rm, chat_id: int | str, buyer_id: int, buyer_username: str | None, text: str) -> bool:
+    if not re.fullmatch(r"\d{1,3}", text.strip()):
+        return False
+
+    pending = get_latest_account_selection_request_by_buyer(buyer_id)
+    if not pending:
+        return False
+
+    selected_num = int(text.strip())
+    free_goods = _build_free_accounts_list(pending["marker"])
+    if not free_goods:
+        acc.send_message(chat_id, "❌ Сейчас нет свободных аккаунтов в этой категории. Напишите /admin.")
+        return True
+
+    if selected_num < 1 or selected_num > len(free_goods):
+        acc.send_message(
+            chat_id,
+            f"❌ Неверный номер. Укажите цифру от 1 до {len(free_goods)}."
+        )
+        return True
+
+    selected_good = free_goods[selected_num - 1]
+    issued_good = rm.issue_good_by_id(
+        order_id=pending["order_id"],
+        good_id=int(selected_good["id"]),
+        buyer_id=buyer_id,
+        buyer_username=buyer_username or pending["buyer_username"],
+        chat_id=chat_id,
+        hours=int(pending["hours"]),
+    )
+    if not issued_good:
+        acc.send_message(
+            chat_id,
+            "❌ Не удалось выдать выбранный аккаунт. Возможно, его уже заняли. Выберите другой номер."
+        )
+        refreshed_free = _build_free_accounts_list(pending["marker"])
+        if refreshed_free:
+            acc.send_message(
+                chat_id,
+                _format_account_selection_message(pending["order_id"], pending["marker"], refreshed_free),
+            )
+        return True
+
+    delete_account_selection_request(pending["order_id"])
+
+    pending_hours = 0
+    if pending["marker"]:
+        pending_hours = get_pending_under_minimum_hours(buyer_id, pending["marker"])
+        if pending_hours > 0:
+            mark_pending_under_minimum_applied(buyer_id, pending["marker"], int(time.time()))
+            acc.send_message(
+                chat_id,
+                f"✅ Ранее оплаченные часы учтены автоматически.\n"
+                f"Суммарное время аренды: {int(pending['hours'])} ч."
+            )
+
+    log_order_event(
+        order_id=pending["order_id"],
+        good_id=issued_good["id"],
+        good_title_snapshot=issued_good["title"],
+        login_snapshot=issued_good["login"],
+        buyer_id=buyer_id,
+        buyer_username=buyer_username,
+        marker=pending["marker"],
+        hours=int(pending["hours"]) - pending_hours,
+        amount_rub=float(pending["amount_rub"]),
+        kind="new_rental",
+        status="paid",
+        created_ts=int(time.time()),
+    )
+
+    chat_link = f"https://funpay.com/chat/?node={chat_id}"
+    send_admin_notification(
+        f"🟡 Ручной выбор свободного аккаунта по оплаченному заказу\n"
+        f"Клиент: {buyer_username or buyer_id}\n"
+        f"Заказ: #{pending['order_id']}\n"
+        f"Маркер исходного лота: {pending['marker'] or 'не определён'}\n"
+        f"Выбранный good_id: {issued_good['id']}\n"
+        f"Логин аккаунта: {issued_good['login']}\n"
+        f"Сумма: {float(pending['amount_rub']):.2f} RUB\n"
+        f"Время аренды: {int(pending['hours'])} ч.\n"
+        f"Чат: {chat_link}"
+    )
+    return True
+
+
 def _process_paid_order(
     acc,
     rm,
@@ -323,7 +436,26 @@ def _process_paid_order(
     )
 
     if not issued_good:
-        acc.send_message(chat_id, "❌ Не удалось выдать аккаунт.")
+        free_goods = _build_free_accounts_list(marker)
+        if not free_goods:
+            acc.send_message(
+                chat_id,
+                "❌ Не удалось выдать аккаунт: свободных аккаунтов в этой категории сейчас нет."
+            )
+            return
+
+        delete_account_selection_requests_by_buyer(buyer_id)
+        create_account_selection_request(
+            order_id=order_id,
+            chat_id=str(chat_id),
+            buyer_id=buyer_id,
+            buyer_username=buyer_username,
+            hours=total_hours,
+            amount_rub=amount_rub,
+            marker=marker,
+            created_ts=int(time.time()),
+        )
+        acc.send_message(chat_id, _format_account_selection_message(order_id, marker, free_goods))
         return
 
     if pending_hours > 0:
