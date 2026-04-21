@@ -40,10 +40,11 @@ class AutoReplyBot:
 
     @staticmethod
     def _message_id_is_not_new(current_id: str, last_id: str) -> bool:
-        try:
-            return int(current_id) <= int(last_id)
-        except (TypeError, ValueError):
-            return current_id <= str(last_id)
+        # Updater может отдавать события не строго по возрастанию id.
+        # Если фильтровать по <= last_id, можно пропустить валидные сообщения
+        # (например, сначала отзыв с большим id, потом оплата с меньшим id).
+        # Поэтому отсекаем только точные дубли по id.
+        return str(current_id) == str(last_id)
 
     @staticmethod
     def _is_paid_order_notice(text_lower: str) -> bool:

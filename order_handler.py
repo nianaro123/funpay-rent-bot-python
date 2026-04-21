@@ -28,6 +28,24 @@ UNDER_MIN_PENDING = "pending"
 UNDER_MIN_APPLIED = "applied"
 
 
+def _send_admin_notification_with_retry(text: str, retries: int = 2, delay_sec: float = 1.0) -> bool:
+    for attempt in range(1, retries + 1):
+        ok = send_admin_notification(text)
+        if ok:
+            return True
+
+        LOGGER.warning(
+            "Не удалось отправить админ-уведомление (attempt=%s/%s), повтор через %.1f сек.",
+            attempt,
+            retries,
+            delay_sec,
+        )
+        if attempt < retries:
+            time.sleep(delay_sec)
+
+    return False
+
+
 def extract_order_id(text: str) -> str | None:
     match = re.search(r"#([A-Z0-9]+)", text)
     return match.group(1) if match else None
@@ -466,22 +484,25 @@ def _process_paid_order(
             f"Суммарное время аренды: {total_hours} ч."
         )
 
-    log_order_event(
-        order_id=order_id,
-        good_id=issued_good["id"],
-        good_title_snapshot=issued_good["title"],
-        login_snapshot=issued_good["login"],
-        buyer_id=buyer_id,
-        buyer_username=buyer_username,
-        marker=marker,
-        hours=hours,
-        amount_rub=amount_rub,
-        kind="new_rental",
-        status="paid",
-        created_ts=int(time.time()),
-    )
+    try:
+        log_order_event(
+            order_id=order_id,
+            good_id=issued_good["id"],
+            good_title_snapshot=issued_good["title"],
+            login_snapshot=issued_good["login"],
+            buyer_id=buyer_id,
+            buyer_username=buyer_username,
+            marker=marker,
+            hours=hours,
+            amount_rub=amount_rub,
+            kind="new_rental",
+            status="paid",
+            created_ts=int(time.time()),
+        )
+    except Exception:
+        LOGGER.exception("Не удалось записать order_event для нового заказа #%s", order_id)
 
-    send_admin_notification(
+    notify_ok = _send_admin_notification_with_retry(
         f"🟢 Новая аренда\n"
         f"Клиент: {buyer_username or buyer_id}\n"
         f"Заказ: #{order_id}\n"
@@ -493,6 +514,8 @@ def _process_paid_order(
         f"Логин аккаунта: {issued_good['login']}\n"
         f"Чат: {chat_link}"
     )
+    if not notify_ok:
+        LOGGER.error("Админ-уведомление о новой аренде не доставлено для заказа #%s", order_id)
 
 
 def handle_paid_order_message(acc, rm, chat_id: int | str, text: str):
