@@ -15,6 +15,9 @@ from storage import (
     set_admin_request_ts,
     is_chat_welcomed,
     mark_chat_welcomed,
+    create_lp_replacement_request,
+    get_lp_replacement_request_by_buyer,
+    delete_lp_replacement_request_by_buyer,
 )
 from settings import WELCOME_TEXT, HELP_TEXT
 from order_handler import handle_paid_order_message, try_handle_account_selection_reply
@@ -195,6 +198,14 @@ class AutoReplyBot:
                 return
 
             if author_id is not None:
+                lp_handled = self.try_handle_lp_replacement_reply(
+                    chat_id=chat_id,
+                    buyer_id=author_id,
+                    text=text,
+                )
+                if lp_handled:
+                    return
+
                 selection_handled = try_handle_account_selection_reply(
                     self.acc,
                     self.rm,
@@ -295,6 +306,26 @@ class AutoReplyBot:
 
         rentals = list_active_rentals_by_buyer(author_id)
 
+        if cmd == "/lp_zamena":
+            if not rentals:
+                self.acc.send_message(chat_id, "У вас нет активных аренд.")
+                return
+
+            rental = rentals[0]
+            create_lp_replacement_request(
+                buyer_id=int(author_id),
+                chat_id=str(chat_id),
+                order_id=str(rental["order_id"]),
+                stage="await_games",
+                lp_games=None,
+                created_ts=int(time.time()),
+            )
+            self.acc.send_message(
+                chat_id,
+                "Напишите цифрой, сколько LP-игр на аккаунте."
+            )
+            return
+
         if cmd == "/acc":
             if not rentals:
                 self.acc.send_message(chat_id, "У вас нет активных аренд.")
@@ -339,6 +370,89 @@ class AutoReplyBot:
             return
 
         self.acc.send_message(chat_id, "Неизвестная команда. Напишите /help")
+
+    def try_handle_lp_replacement_reply(
+        self,
+        *,
+        chat_id: int | str,
+        buyer_id: int,
+        text: str,
+    ) -> bool:
+        pending = get_lp_replacement_request_by_buyer(buyer_id)
+        if not pending:
+            return False
+
+        value = text.strip()
+        if not value.isdigit():
+            self.acc.send_message(chat_id, "Пожалуйста, отправьте число.")
+            return True
+
+        if pending["stage"] == "await_games":
+            lp_games = int(value)
+            if lp_games < 1 or lp_games > 5:
+                self.acc.send_message(chat_id, "Не удалось обработать это количество игр. Введите корректное число.")
+                return True
+
+            bonus_hours = lp_games * 2
+            create_lp_replacement_request(
+                buyer_id=buyer_id,
+                chat_id=str(chat_id),
+                order_id=str(pending["order_id"]),
+                stage="await_decision",
+                lp_games=lp_games,
+                created_ts=int(time.time()),
+            )
+            self.acc.send_message(
+                chat_id,
+                "\n".join([
+                    f"Зафиксировано: {lp_games} LP-игр.",
+                    "Выберите вариант и отправьте цифру:",
+                    "1 — заменить аккаунт на другой",
+                    f"2 — отыграю LP и получу +{bonus_hours} ч. бонусного времени",
+                ])
+            )
+            return True
+
+        if pending["stage"] == "await_decision":
+            lp_games = int(pending["lp_games"] or 0)
+            if value == "1":
+                ok, message = self.rm.replace_low_priority_account(
+                    buyer_id=buyer_id,
+                    chat_id=chat_id,
+                    lp_games=lp_games,
+                )
+                if not ok:
+                    self.acc.send_message(chat_id, f"❌ {message}")
+                    return True
+                delete_lp_replacement_request_by_buyer(buyer_id)
+                return True
+
+            if value == "2":
+                bonus_hours = lp_games * 2
+                if bonus_hours <= 0:
+                    self.acc.send_message(chat_id, "Не удалось рассчитать бонус. Начните заново: /lp_zamena")
+                    delete_lp_replacement_request_by_buyer(buyer_id)
+                    return True
+                ok = self.rm.extend_rental_by_order_id(
+                    order_id=str(pending["order_id"]),
+                    hours=bonus_hours,
+                    source="lp_compensation",
+                )
+                if not ok:
+                    self.acc.send_message(chat_id, "❌ Не удалось начислить бонусное время. Напишите /admin.")
+                    return True
+                self.acc.send_message(
+                    chat_id,
+                    f"✅ Отлично! После отыгрыша LP по заказу #{pending['order_id']} начислено +{bonus_hours} ч."
+                )
+                delete_lp_replacement_request_by_buyer(buyer_id)
+                return True
+
+            self.acc.send_message(chat_id, "Отправьте 1 или 2.")
+            return True
+
+        delete_lp_replacement_request_by_buyer(buyer_id)
+        return False
 
     def tick(self):
         self.rm.tick()
