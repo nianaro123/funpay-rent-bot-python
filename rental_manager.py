@@ -30,6 +30,10 @@ from storage import (
     list_goods,
     get_auto_raise_enabled,
     get_auto_raise_interval_sec,
+    get_free_good_by_marker_excluding,
+    set_good_active,
+    swap_rental_good,
+    update_good,
 )
 from tg_notify import send_admin_notification
 from steam_session_worker import trigger_steam_sign_out_async
@@ -101,6 +105,7 @@ class RentalManager:
             "",
             "💬 Если возникнут вопросы, напишите /help — я подскажу доступные команды.",
             "⭐ За отзыв по заказу начисляется +1 час к аренде.",
+            "🛟 Если на аккаунте Low Priority — напишите /lp_zamena.",
         ])
         return "\n".join(lines)
 
@@ -269,9 +274,83 @@ class RentalManager:
 
         LOGGER.info(
             "Выдан аккаунт good_id=%s, marker=%s, order_id=%s",
-            good["id"], good_marker, order_id
+            good["id"], good.get("marker"), order_id
         )
         return good
+
+    def replace_low_priority_account(self, buyer_id: int, chat_id: int | str, lp_games: int) -> tuple[bool, str]:
+        rental = get_active_rental_by_buyer(buyer_id)
+        if not rental:
+            return False, "У вас нет активной аренды для замены аккаунта."
+
+        marker = (rental["marker"] or "").strip()
+        if not marker:
+            return False, "Не удалось определить категорию текущего аккаунта. Напишите /admin."
+
+        old_good_id = int(rental["good_id"])
+        replacement = get_free_good_by_marker_excluding(marker, old_good_id)
+        if not replacement:
+            return False, "Сейчас нет свободного аккаунта для замены в этой категории. Напишите /admin."
+
+        note = (rental["note"] or "").strip()
+        lp_note = f"[LP {lp_games} игр]"
+        new_note = f"{note} {lp_note}".strip() if note else lp_note
+        update_good(old_good_id, note=new_note)
+        set_good_active(old_good_id, 0)
+
+        old_lot_id = int(rental["good_lot_id"] or 0)
+        if old_lot_id:
+            try:
+                self.lot_manager.set_lot_active(old_lot_id, False)
+            except Exception:
+                LOGGER.exception("Не удалось деактивировать лот %s после LP-замены", old_lot_id)
+                try:
+                    self.lot_manager.set_lot_busy(old_lot_id)
+                except Exception:
+                    LOGGER.exception("Не удалось пометить лот %s как занятый после LP-замены", old_lot_id)
+
+        swapped = swap_rental_good(
+            order_id=rental["order_id"],
+            new_good_id=int(replacement["id"]),
+            new_lot_id=int(replacement["lot_id"]),
+        )
+        if not swapped:
+            return False, "Не удалось переключить заказ на другой аккаунт. Попробуйте ещё раз."
+
+        try:
+            if replacement["lot_id"]:
+                self.lot_manager.set_lot_busy(int(replacement["lot_id"]))
+        except Exception:
+            LOGGER.exception("Не удалось пометить новый лот как занятый good_id=%s", replacement["id"])
+
+        code = None
+        shared_secret = (replacement["shared_secret"] or "").strip()
+        if shared_secret:
+            code = generate_steam_guard_code(shared_secret)
+
+        self.acc.send_message(
+            chat_id,
+            "\n".join([
+                f"✅ Аккаунт по заказу #{rental['order_id']} заменён.",
+                "Новый аккаунт:",
+                f"• Логин: {replacement['login']}",
+                f"• Пароль: {replacement['password']}",
+                f"• Steam Guard: {code if code else 'не задан'}",
+            ])
+        )
+
+        send_admin_notification(
+            "\n".join([
+                "🛟 LP-замена аккаунта",
+                f"Клиент: {rental['buyer_username'] or buyer_id}",
+                f"Заказ: #{rental['order_id']}",
+                f"LP-игр: {lp_games}",
+                f"Старый good_id: {old_good_id}",
+                f"Новый good_id: {replacement['id']}",
+                f"Чат: https://funpay.com/chat/?node={chat_id}",
+            ])
+        )
+        return True, ""
 
     def extend_rental_by_order_id(self, order_id: str, hours: int, source: str = "same_marker_rebuy") -> bool:
         rental = get_rental_by_order_id(order_id)

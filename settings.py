@@ -40,6 +40,15 @@ def _get_text(name: str, default: str) -> str:
     return value.replace("\\n", "\n")
 
 
+def _ensure_help_command(help_text: str, command_line: str) -> str:
+    normalized = help_text.strip()
+    if command_line in normalized:
+        return normalized
+    if not normalized:
+        return command_line
+    return f"{normalized}\n{command_line}"
+
+
 def _get_path(name: str, default: str) -> str:
     raw = os.getenv(name, default).strip()
     path = Path(raw)
@@ -66,8 +75,10 @@ HELP_TEXT = _get_text(
     "/acc — данные аккаунта\n"
     "/code — Steam Guard код\n"
     "/time — время аренды\n"
+    "/lp_zamena — замена аккаунта при Low Priority\n"
     "/admin — позвать продавца",
 )
+HELP_TEXT = _ensure_help_command(HELP_TEXT, "/lp_zamena — замена аккаунта при Low Priority")
 
 STEAM_SIGN_OUT_ENABLED = _get_bool("STEAM_SIGN_OUT_ENABLED", True)
 STEAM_SIGN_OUT_NODE_BIN = _get_str("STEAM_SIGN_OUT_NODE_BIN", "node")

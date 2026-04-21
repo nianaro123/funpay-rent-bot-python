@@ -156,3 +156,47 @@ class LotManager:
         new_en = self.make_free_title_en(en) if en else None
 
         return self.update_titles(lot_id, new_ru, new_en)
+
+    def set_lot_active(self, lot_id: int, is_active: bool) -> bool:
+        fields = self.get_lot_fields(lot_id)
+        active_keys = (
+            "active",
+            "fields[active]",
+            "offer_active",
+            "fields[public]",
+        )
+
+        changed = False
+        for key in active_keys:
+            if key not in fields:
+                continue
+
+            if is_active:
+                fields[key] = fields[key] or "on"
+            else:
+                fields.pop(key, None)
+            changed = True
+
+        if not changed:
+            raise RuntimeError("Не найдено поле активности лота для переключения")
+
+        response = self.acc.method(
+            "post",
+            "lots/offerSave",
+            {
+                "accept": "*/*",
+                "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "x-requested-with": "XMLHttpRequest",
+            },
+            fields,
+            raise_not_200=True,
+        )
+
+        try:
+            data = response.json()
+            if data.get("error"):
+                raise RuntimeError(f"FunPay вернул ошибку: {data}")
+        except Exception:
+            pass
+
+        return True

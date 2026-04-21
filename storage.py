@@ -164,6 +164,17 @@ def init_db():
     """)
 
     conn.execute("""
+    CREATE TABLE IF NOT EXISTS lp_replacement_requests (
+        buyer_id INTEGER PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        order_id TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        lp_games INTEGER,
+        created_ts INTEGER NOT NULL
+    )
+    """)
+
+    conn.execute("""
         INSERT OR IGNORE INTO bot_settings(key, value)
         VALUES ('auto_raise_enabled', ?)
     """, ("1" if AUTO_RAISE_ENABLED else "0",))
@@ -590,6 +601,97 @@ def delete_account_selection_requests_by_buyer(buyer_id: int) -> None:
             WHERE buyer_id = ?
         """, (buyer_id,))
         conn.commit()
+    finally:
+        conn.close()
+
+
+def create_lp_replacement_request(
+    buyer_id: int,
+    chat_id: str,
+    order_id: str,
+    stage: str,
+    lp_games: int | None,
+    created_ts: int,
+):
+    conn = get_connection()
+    try:
+        conn.execute("""
+            INSERT INTO lp_replacement_requests(
+                buyer_id, chat_id, order_id, stage, lp_games, created_ts
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(buyer_id) DO UPDATE SET
+                chat_id = excluded.chat_id,
+                order_id = excluded.order_id,
+                stage = excluded.stage,
+                lp_games = excluded.lp_games,
+                created_ts = excluded.created_ts
+        """, (buyer_id, str(chat_id), order_id, stage, lp_games, created_ts))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_lp_replacement_request_by_buyer(buyer_id: int):
+    conn = get_connection()
+    try:
+        row = conn.execute("""
+            SELECT *
+            FROM lp_replacement_requests
+            WHERE buyer_id = ?
+            LIMIT 1
+        """, (buyer_id,)).fetchone()
+        return row
+    finally:
+        conn.close()
+
+
+def delete_lp_replacement_request_by_buyer(buyer_id: int) -> None:
+    conn = get_connection()
+    try:
+        conn.execute("""
+            DELETE FROM lp_replacement_requests
+            WHERE buyer_id = ?
+        """, (buyer_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_free_good_by_marker_excluding(marker: str, excluded_good_id: int):
+    conn = get_connection()
+    try:
+        row = conn.execute("""
+            SELECT *
+            FROM goods
+            WHERE is_active = 1
+              AND marker = ?
+              AND id != ?
+              AND id NOT IN (
+                    SELECT good_id
+                    FROM rentals
+                    WHERE closed = 0
+              )
+            ORDER BY id ASC
+            LIMIT 1
+        """, (marker, excluded_good_id)).fetchone()
+        return row
+    finally:
+        conn.close()
+
+
+def swap_rental_good(order_id: str, new_good_id: int, new_lot_id: int) -> bool:
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE rentals
+            SET good_id = ?, lot_id = ?
+            WHERE order_id = ?
+              AND closed = 0
+        """, (new_good_id, new_lot_id, order_id))
+        conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()
 
