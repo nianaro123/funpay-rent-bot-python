@@ -43,11 +43,15 @@ class AutoReplyBot:
 
     @staticmethod
     def _message_id_is_not_new(current_id: str, last_id: str) -> bool:
-        # Updater может отдавать события не строго по возрастанию id.
-        # Если фильтровать по <= last_id, можно пропустить валидные сообщения
-        # (например, сначала отзыв с большим id, потом оплата с меньшим id).
-        # Поэтому отсекаем только точные дубли по id.
-        return str(current_id) == str(last_id)
+        # Системные сообщения в чатах исторически имеют монотонно растущий id.
+        # Фильтр по <= защищает от повторной обработки старой истории после перезапуска,
+        # из-за которой могут отправляться "просроченные" админ-уведомления.
+        # Новые оплаты отдельно обрабатываются через Runner order events (main.py),
+        # поэтому риск пропустить оплату из-за порядка chat message id минимален.
+        try:
+            return int(current_id) <= int(last_id)
+        except (TypeError, ValueError):
+            return str(current_id) <= str(last_id)
 
     @staticmethod
     def _is_paid_order_notice(text_lower: str) -> bool:
