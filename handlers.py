@@ -61,6 +61,15 @@ class AutoReplyBot:
     def _is_refund_notice(text_lower: str) -> bool:
         return "вернул деньги покупателю" in text_lower and "заказ" in text_lower
 
+    @staticmethod
+    def _normalize_good_title_for_free_list(title: str) -> str:
+        normalized = title.strip()
+        prefixes = ("Занят! ", "Свободен! ", "Busy! ", "Free! ")
+        for prefix in prefixes:
+            if normalized.startswith(prefix):
+                normalized = normalized[len(prefix):].strip()
+        return f"Свободен! {normalized}"
+
     def _send_long_message(self, chat_id: str, lines: list[str]) -> None:
         def _encoded_len(value: str) -> int:
             return len(quote_plus(value, safe=""))
@@ -227,9 +236,10 @@ class AutoReplyBot:
             for i, g in enumerate(free_goods, start=1):
                 lot_id = g["lot_id"]
                 lot_link = f"https://funpay.com/lots/offer?id={lot_id}" if lot_id else "не указана"
+                display_title = self._normalize_good_title_for_free_list(g["title"])
 
                 lines.extend([
-                    f"{i}. {g['title']}",
+                    f"{i}. {display_title}",
                     f"Ссылка на лот: {lot_link}",
                     "",
                 ])

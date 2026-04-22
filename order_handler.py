@@ -13,6 +13,7 @@ from storage import (
     get_rental_by_order_id,
     get_active_rental_by_buyer_and_marker,
     log_order_event,
+    get_order_event,
 )
 from tg_notify import send_admin_notification
 
@@ -88,23 +89,6 @@ def get_good_snapshot_by_marker(marker: str):
             LIMIT 1
             """,
             (marker,),
-        ).fetchone()
-        return row
-    finally:
-        conn.close()
-
-
-def get_order_event(order_id: str):
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            """
-            SELECT *
-            FROM order_events
-            WHERE order_id = ?
-            LIMIT 1
-            """,
-            (order_id,),
         ).fetchone()
         return row
     finally:
