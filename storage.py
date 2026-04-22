@@ -9,8 +9,10 @@ def get_connection():
     db_path = Path(DB_PATH)
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(db_path), timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 
@@ -706,7 +708,7 @@ def log_order_event(
 ):
     conn = get_connection()
     conn.execute("""
-        INSERT OR REPLACE INTO order_events(
+        INSERT INTO order_events(
             order_id,
             good_id,
             good_title_snapshot,
@@ -723,6 +725,7 @@ def log_order_event(
             refunded_ts
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+        ON CONFLICT(order_id) DO NOTHING
     """, (
         order_id,
         good_id,
