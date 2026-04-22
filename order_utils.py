@@ -14,12 +14,7 @@ def get_order_html(acc: Account, order_id: str) -> str:
         {},
         raise_not_200=True
     )
-    html = response.content.decode()
-
-    with open("order_debug.html", "w", encoding="utf-8") as f:
-        f.write(html)
-
-    return html
+    return response.content.decode()
 
 
 def extract_hours_from_order_html(html: str) -> int | None:
