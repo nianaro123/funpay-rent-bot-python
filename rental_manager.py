@@ -29,6 +29,7 @@ from storage import (
     list_goods,
     get_auto_raise_enabled,
     get_auto_raise_interval_sec,
+    get_order_event,
 )
 from tg_notify import send_admin_notification
 from steam_session_worker import trigger_steam_sign_out_async
@@ -346,6 +347,10 @@ class RentalManager:
             rental = get_rental_by_order_id(order_id)
             if rental and rental["buyer_username"]:
                 buyer_name = rental["buyer_username"]
+            else:
+                order_event = get_order_event(order_id)
+                if order_event and order_event["buyer_username"]:
+                    buyer_name = order_event["buyer_username"]
 
         if buyer_name == "Неизвестный клиент":
             match_buyer = re.search(r"Покупатель\s+(.+?)\s+подтвердил", text, flags=re.IGNORECASE | re.DOTALL)

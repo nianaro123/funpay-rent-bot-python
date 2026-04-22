@@ -741,6 +741,18 @@ def log_order_event(
     conn.close()
 
 
+def get_order_event(order_id: str):
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT *
+        FROM order_events
+        WHERE order_id = ?
+        LIMIT 1
+    """, (order_id,)).fetchone()
+    conn.close()
+    return row
+
+
 def mark_order_confirmed(order_id: str, confirmed_ts: int):
     conn = get_connection()
     conn.execute("""
