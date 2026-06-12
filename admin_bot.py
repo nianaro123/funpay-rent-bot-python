@@ -2,6 +2,8 @@
 
 import logging
 import re
+import secrets
+import sqlite3
 import time
 
 from FunPayAPI import Account
@@ -29,6 +31,9 @@ from storage import (
     set_good_active,
     list_active_rentals,
     count_free_goods,
+    list_free_goods,
+    get_free_good_by_id,
+    create_rental,
     update_good,
     get_good_by_id,
     get_confirmed_income_total,
@@ -44,6 +49,8 @@ from storage import (
     set_auto_raise_interval_sec,
 )
 from lot_manager import LotManager
+from steam_guard import generate_steam_guard_code
+from rental_manager import RentalManager
 from steam_session_worker import trigger_steam_sign_out_async
 
 logging.basicConfig(
@@ -57,6 +64,7 @@ ADD_LOT_LINK, ADD_LOGIN, ADD_PASSWORD, ADD_NOTE, ADD_SHARED_SECRET = range(5)
 EDIT_GOOD_ID, EDIT_LOT_LINK, EDIT_LOGIN, EDIT_PASSWORD, EDIT_NOTE, EDIT_SHARED_SECRET = range(5, 11)
 CLOSE_RENT_ROW = 11
 AUTO_RAISE_MENU, AUTO_RAISE_INTERVAL_INPUT = range(12, 14)
+MANUAL_RENT_GOOD_ID, MANUAL_RENT_HOURS, MANUAL_RENT_USERNAME = range(14, 17)
 
 FUNPAY_ACC = None
 
@@ -67,6 +75,7 @@ BTN_ACTIVE_RENTALS = "📊 Active Rentals"
 BTN_FREE_GOODS = "🟢 Free Goods"
 BTN_STATS = "💰 Stats"
 BTN_CLOSE_RENTAL = "⛔ Close Rental"
+BTN_ADD_RENTAL = "📝 Add Rental"
 BTN_UPDATE_TITLES = "🔄 Update Titles"
 BTN_AUTO_RAISE = "🚀 Auto Raise Lots"
 BTN_AUTO_RAISE_ENABLE = "✅ Включить"
@@ -86,8 +95,8 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
             [BTN_ADD_GOOD, BTN_EDIT_GOOD],
             [BTN_LIST_GOODS, BTN_ACTIVE_RENTALS],
             [BTN_FREE_GOODS, BTN_STATS],
-            [BTN_CLOSE_RENTAL, BTN_UPDATE_TITLES],
-            [BTN_AUTO_RAISE],
+            [BTN_CLOSE_RENTAL, BTN_ADD_RENTAL],
+            [BTN_UPDATE_TITLES, BTN_AUTO_RAISE],
         ],
         resize_keyboard=True,
     )
@@ -168,14 +177,17 @@ def _to_funpay_plain_text(text: str) -> str:
     return text[:MAX_FUNPAY_MESSAGE_LEN].strip()
 
 
-def _send_buyer_message_with_fallback(chat_id: int | str, text: str) -> bool:
+def _send_buyer_message_with_fallback(
+    chat_id: int | str,
+    text: str,
+    fallback: str = "Продавец вручную продлил аренду. Проверьте оставшееся время в чате заказа.",
+) -> bool:
     if FUNPAY_ACC is None:
         return False
 
     original = (text or "").strip()
     sanitized = _sanitize_chat_message(original)
     plain = _to_funpay_plain_text(sanitized)
-    fallback = "Продавец вручную продлил аренду. Проверьте оставшееся время в чате заказа."
 
     attempts = [
         ("original", original),
@@ -263,7 +275,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{BTN_ACTIVE_RENTALS} — активные аренды\n"
         f"{BTN_FREE_GOODS} — число свободных товаров\n"
         f"{BTN_STATS} — статистика за всё время\n"
-        f"{BTN_CLOSE_RENTAL} — вручную закрыть аренду\n\n"
+        f"{BTN_CLOSE_RENTAL} — вручную закрыть аренду\n"
+        f"{BTN_ADD_RENTAL} — вручную создать аренду\n\n"
         f"{BTN_UPDATE_TITLES} — обновить title всех лотов из FunPay\n\n"
         f"{BTN_AUTO_RAISE} — меню автоподнятия лотов\n\n"
         "Команды:\n"
@@ -274,6 +287,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/extendrentrow N HOURS — вручную продлить аренду по номеру строки из /rentals\n"
         "/closerent ORDER_ID — вручную закрыть аренду по номеру заказа\n"
         "/closerentrow N — вручную закрыть аренду по номеру строки из /rentals\n"
+        "/addrental — пошаговое ручное создание аренды\n"
         "/addgood — пошаговое добавление товара\n"
         "/editgood — пошаговое редактирование товара\n"
         "/disablegood good_id\n"
@@ -315,6 +329,9 @@ async def admin_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == BTN_CLOSE_RENTAL:
         return await closerent_start(update, context)
 
+    if text == BTN_ADD_RENTAL:
+        return await addrental_start(update, context)
+
     if text == BTN_UPDATE_TITLES:
         return await updatetitles_cmd(update, context)
 
@@ -341,6 +358,10 @@ async def stats_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def updatetitles_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await updatetitles_cmd(update, context)
+
+
+async def addrental_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await addrental_start(update, context)
 
 
 async def autoraise_menu_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -489,6 +510,240 @@ async def rentals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     await update.message.reply_text("\n".join(lines))
+
+
+def _format_free_goods_for_manual_rental(goods) -> str:
+    lines = [
+        "📝 Создание аренды вручную",
+        "Свободные аккаунты:",
+    ]
+    for good in goods:
+        marker = good["marker"] or "без маркера"
+        lines.append(
+            f"\n• good_id={good['id']} | {marker}\n"
+            f"  lot_id: {good['lot_id']}\n"
+            f"  title: {good['title']}\n"
+            f"  login: {good['login']}"
+        )
+
+    lines.extend([
+        "",
+        "Введите good_id аккаунта, который нужно выдать.",
+        "Или /cancel для отмены.",
+    ])
+    return "\n".join(lines)
+
+
+def _format_admin_manual_rental_result(
+    *,
+    order_id: str,
+    good,
+    hours: int,
+    buyer_username: str,
+    steam_guard_code: str | None,
+    buyer_msg_sent: bool,
+    chat_found: bool,
+    lot_busy_set: bool,
+) -> str:
+    return "\n".join([
+        "✅ Аренда создана вручную.",
+        f"Заказ: #{order_id}",
+        f"Клиент: {buyer_username}",
+        f"good_id: {good['id']}",
+        f"lot_id: {good['lot_id']}",
+        f"Время: {hours} ч.",
+        "",
+        "🔐 Данные аккаунта:",
+        f"Логин: {good['login']}",
+        f"Пароль: {good['password']}",
+        f"Steam Guard: {steam_guard_code if steam_guard_code else 'не задан'}",
+        "",
+        f"Чат FunPay: {'найден' if chat_found else 'не найден'}",
+        f"Сообщение клиенту: {'отправлено' if buyer_msg_sent else 'не отправлено'}",
+        f"Статус лота: {'переведён в Занят!' if lot_busy_set else 'не удалось перевести в Занят!'}",
+    ])
+
+
+def _generate_manual_order_id(good_id: int) -> str:
+    suffix = secrets.token_hex(2).upper()
+    return f"MANUAL{int(time.time())}{good_id}{suffix}"
+
+
+def _get_funpay_chat_by_username(username: str):
+    if FUNPAY_ACC is None:
+        return None
+
+    try:
+        return FUNPAY_ACC.get_chat_by_name(username, make_request=True)
+    except Exception as e:
+        LOGGER.exception("Не удалось найти FunPay чат по username=%s: %s", username, e)
+        return None
+
+
+def _try_resolve_buyer_id(chat_id: int | str, username: str) -> int | None:
+    if FUNPAY_ACC is None:
+        return None
+
+    try:
+        history = FUNPAY_ACC.get_chat_history(chat_id, interlocutor_username=None, from_id=0)
+    except Exception as e:
+        LOGGER.warning("Не удалось получить историю чата для username=%s chat_id=%s: %s", username, chat_id, e)
+        return None
+
+    for message in reversed(history):
+        if message.author_id not in (0, FUNPAY_ACC.id) and message.author == username:
+            return message.author_id
+    return None
+
+
+async def addrental_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update):
+        return ConversationHandler.END
+
+    context.user_data.clear()
+    goods = list_free_goods()
+    if not goods:
+        await update.message.reply_text("Свободных активных аккаунтов нет.", reply_markup=get_main_keyboard())
+        return ConversationHandler.END
+
+    await update.message.reply_text(_format_free_goods_for_manual_rental(goods))
+    return MANUAL_RENT_GOOD_ID
+
+
+async def addrental_good_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    raw = (update.message.text or "").strip()
+    try:
+        good_id = int(raw)
+    except ValueError:
+        await update.message.reply_text("good_id должен быть числом. Введите good_id из списка свободных аккаунтов:")
+        return MANUAL_RENT_GOOD_ID
+
+    good = get_free_good_by_id(good_id)
+    if not good:
+        await update.message.reply_text("❌ Аккаунт не найден, отключён или уже занят. Введите другой good_id:")
+        return MANUAL_RENT_GOOD_ID
+
+    context.user_data["manual_rental_good_id"] = good_id
+    await update.message.reply_text("Введите время аренды в часах. Например: 2")
+    return MANUAL_RENT_HOURS
+
+
+async def addrental_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    raw = (update.message.text or "").strip()
+    try:
+        hours = int(raw)
+    except ValueError:
+        await update.message.reply_text("Время должно быть целым числом часов. Например: 2")
+        return MANUAL_RENT_HOURS
+
+    if hours <= 0:
+        await update.message.reply_text("Время аренды должно быть больше 0 часов.")
+        return MANUAL_RENT_HOURS
+
+    context.user_data["manual_rental_hours"] = hours
+    await update.message.reply_text("Введите никнейм покупателя на FunPay. Можно без @.")
+    return MANUAL_RENT_USERNAME
+
+
+async def addrental_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    username = (update.message.text or "").strip().lstrip("@")
+    if not username:
+        await update.message.reply_text("Никнейм не должен быть пустым. Введите никнейм покупателя на FunPay:")
+        return MANUAL_RENT_USERNAME
+
+    good_id = int(context.user_data["manual_rental_good_id"])
+    hours = int(context.user_data["manual_rental_hours"])
+    good = get_free_good_by_id(good_id)
+    if not good:
+        context.user_data.clear()
+        await update.message.reply_text(
+            "❌ Аккаунт уже заняли или отключили во время создания аренды. Начните заново.",
+            reply_markup=get_main_keyboard(),
+        )
+        return ConversationHandler.END
+
+    chat = _get_funpay_chat_by_username(username)
+    chat_found = chat is not None
+    chat_id = str(chat.id) if chat else f"manual:{username}"
+    buyer_id = _try_resolve_buyer_id(chat.id, username) if chat else None
+    order_id = _generate_manual_order_id(good_id)
+    now = int(time.time())
+    paid_end_ts = now + hours * 3600
+    grace_end_ts = paid_end_ts + RentalManager.GRACE_SECONDS
+    rental_code = secrets.token_hex(8)[:8].upper()
+
+    try:
+        create_rental(
+            order_id=order_id,
+            lot_id=good["lot_id"],
+            chat_id=chat_id,
+            buyer_id=buyer_id,
+            buyer_username=username,
+            good_id=good["id"],
+            code=rental_code,
+            start_ts=now,
+            paid_end_ts=paid_end_ts,
+            grace_end_ts=grace_end_ts,
+        )
+    except sqlite3.IntegrityError:
+        context.user_data.clear()
+        await update.message.reply_text(
+            "❌ Этот аккаунт уже занят или ручная аренда с таким ID уже создана. Начните заново.",
+            reply_markup=get_main_keyboard(),
+        )
+        return ConversationHandler.END
+
+    steam_guard_code = None
+    shared_secret = (good["shared_secret"] or "").strip()
+    if shared_secret:
+        try:
+            steam_guard_code = generate_steam_guard_code(shared_secret)
+        except Exception as e:
+            LOGGER.exception("Ошибка генерации Steam Guard кода для ручной аренды good_id=%s: %s", good["id"], e)
+
+    issue_message = RentalManager(FUNPAY_ACC)._format_issue_message(
+        good=good,
+        order_id=order_id,
+        hours=hours,
+        steam_guard_code=steam_guard_code,
+    )
+
+    buyer_msg_sent = False
+    if chat:
+        buyer_msg_sent = _send_buyer_message_with_fallback(
+            chat.id,
+            issue_message,
+            fallback="Продавец вручную создал аренду. Данные аккаунта отправлены в Telegram администратору.",
+        )
+
+    lot_busy_set = False
+    try:
+        if FUNPAY_ACC is not None and good["lot_id"]:
+            LotManager(FUNPAY_ACC).set_lot_busy(int(good["lot_id"]))
+            lot_busy_set = True
+            LOGGER.info(
+                "Лот %s переведён в статус 'Занят!' после ручной аренды %s",
+                good["lot_id"],
+                order_id,
+            )
+    except Exception as e:
+        LOGGER.exception("Не удалось сменить название лота %s на 'Занят!' при ручной аренде: %s", good["lot_id"], e)
+
+    context.user_data.clear()
+    await update.message.reply_text(
+        _format_admin_manual_rental_result(
+            order_id=order_id,
+            good=good,
+            hours=hours,
+            buyer_username=username,
+            steam_guard_code=steam_guard_code,
+            buyer_msg_sent=buyer_msg_sent,
+            chat_found=chat_found,
+            lot_busy_set=lot_busy_set,
+        ),
+        reply_markup=get_main_keyboard(),
+    )
+    return ConversationHandler.END
 
 
 async def _close_rental_internal(order_id: str) -> tuple[bool, str]:
@@ -1284,6 +1539,19 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel_cmd)],
     )
 
+    addrental_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("addrental", addrental_start),
+            MessageHandler(filters.Regex(f"^{re.escape(BTN_ADD_RENTAL)}$"), addrental_button),
+        ],
+        states={
+            MANUAL_RENT_GOOD_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, addrental_good_id)],
+            MANUAL_RENT_HOURS: [MessageHandler(filters.TEXT & ~filters.COMMAND, addrental_hours)],
+            MANUAL_RENT_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, addrental_username)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_cmd)],
+    )
+
     autoraise_conv = ConversationHandler(
         entry_points=[
             CommandHandler("autoraise", autoraise_cmd),
@@ -1320,6 +1588,7 @@ def main():
     app.add_handler(addgood_conv)
     app.add_handler(editgood_conv)
     app.add_handler(closerent_conv)
+    app.add_handler(addrental_conv)
     app.add_handler(autoraise_conv)
     app.add_handler(CommandHandler("disablegood", disablegood_cmd))
     app.add_handler(CommandHandler("enablegood", enablegood_cmd))
