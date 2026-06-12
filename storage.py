@@ -410,6 +410,41 @@ def count_free_goods():
     return int(row["cnt"])
 
 
+def list_free_goods():
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT *
+        FROM goods g
+        WHERE g.is_active = 1
+          AND g.id NOT IN (
+                SELECT good_id
+                FROM rentals
+                WHERE closed = 0
+          )
+        ORDER BY g.marker ASC, g.id ASC
+    """).fetchall()
+    conn.close()
+    return rows
+
+
+def get_free_good_by_id(good_id: int):
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT *
+        FROM goods g
+        WHERE g.id = ?
+          AND g.is_active = 1
+          AND g.id NOT IN (
+                SELECT good_id
+                FROM rentals
+                WHERE closed = 0
+          )
+        LIMIT 1
+    """, (good_id,)).fetchone()
+    conn.close()
+    return row
+
+
 def get_active_rental_by_buyer(buyer_id: int):
     conn = get_connection()
     row = conn.execute("""
