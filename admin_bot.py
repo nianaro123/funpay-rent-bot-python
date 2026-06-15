@@ -52,6 +52,7 @@ from lot_manager import LotManager
 from steam_guard import generate_steam_guard_code
 from rental_manager import RentalManager
 from steam_session_worker import trigger_steam_sign_out_async
+from funpay_compat import patch_send_message_without_bot_prefix
 
 logging.basicConfig(
     level=logging.INFO,
@@ -158,6 +159,7 @@ def init_funpay_account():
     global FUNPAY_ACC
     try:
         FUNPAY_ACC = Account(GOLDEN_KEY, user_agent=USER_AGENT).get()
+        patch_send_message_without_bot_prefix(FUNPAY_ACC)
         LOGGER.info("FunPay account initialized in admin_bot.py")
     except Exception as e:
         FUNPAY_ACC = None
