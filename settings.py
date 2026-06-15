@@ -57,16 +57,16 @@ TELEGRAM_ADMIN_USER_ID = _get_int("TELEGRAM_ADMIN_USER_ID", 0)
 
 DB_PATH = _get_path("DB_PATH", "/app/data/rent_bot.sqlite3")
 
-WELCOME_TEXT = _get_text("WELCOME_TEXT", "🤖 Привет! Я робот-помощник по выдаче аккаунтов в аренду. Напиши /help, чтобы увидеть доступные команды.")
+WELCOME_TEXT = _get_text("WELCOME_TEXT", "🤖 Привет! Я робот-помощник по выдаче аккаунтов в аренду. Напиши /help или !help, чтобы увидеть доступные команды.")
 HELP_TEXT = _get_text(
     "HELP_TEXT",
-    "🤖 Доступные команды:\n"
-    "/help — список команд\n"
-    "/free — список свободных аккаунтов с рейтингом\n"
-    "/acc — данные аккаунта\n"
-    "/code — Steam Guard код\n"
-    "/time — время аренды\n"
-    "/admin — позвать продавца",
+    "🤖 Доступные команды (можно писать через / или !):\n"
+    "/help или !help — список команд\n"
+    "/free или !free — список свободных аккаунтов с рейтингом\n"
+    "/acc или !acc — данные аккаунта\n"
+    "/code или !code — Steam Guard код\n"
+    "/time или !time — время аренды\n"
+    "/admin или !admin — позвать продавца",
 )
 
 STEAM_SIGN_OUT_ENABLED = _get_bool("STEAM_SIGN_OUT_ENABLED", True)
