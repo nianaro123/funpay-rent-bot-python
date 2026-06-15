@@ -202,8 +202,8 @@ class AutoReplyBot:
                 LOGGER.debug("Пропуск собственного сообщения chat_id=%s msg_id=%s", chat_id, msg_id)
                 return
 
-            # Команды клиента
-            if text.startswith("/"):
+            # Команды клиента: поддерживаем стандартный префикс / и альтернативный !.
+            if self._is_command(text):
                 LOGGER.info("Обработка команды chat_id=%s msg_id=%s text=%s", chat_id, msg_id, text)
                 self.handle_command(chat_id, text, author_id, author)
                 return
@@ -217,8 +217,18 @@ class AutoReplyBot:
         finally:
             set_last_message_id(chat_id, msg_id)
 
+    @staticmethod
+    def _is_command(text: str) -> bool:
+        return text.startswith(("/", "!"))
+
+    @staticmethod
+    def _normalize_command(command: str) -> str:
+        if command.startswith("!"):
+            return f"/{command[1:]}"
+        return command
+
     def handle_command(self, chat_id, text, author_id=None, author=None):
-        cmd = text.split()[0].lower()
+        cmd = self._normalize_command(text.split()[0].lower())
 
         if cmd == "/help":
             self.acc.send_message(chat_id, HELP_TEXT)
@@ -335,7 +345,7 @@ class AutoReplyBot:
             self.acc.send_message(chat_id, "\n".join(lines))
             return
 
-        self.acc.send_message(chat_id, "Неизвестная команда. Напишите /help")
+        self.acc.send_message(chat_id, "Неизвестная команда. Напишите /help или !help")
 
     def tick(self):
         self.rm.tick()
