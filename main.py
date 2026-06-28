@@ -14,7 +14,10 @@ from FunPayAPI.common.enums import OrderStatuses
 
 from settings import GOLDEN_KEY, USER_AGENT, REQUESTS_DELAY
 from handlers import AutoReplyBot
-from funpay_compat import patch_send_message_without_bot_prefix
+from funpay_compat import (
+    patch_runner_skip_empty_updates,
+    patch_send_message_without_bot_prefix,
+)
 from storage import init_db
 from order_handler import handle_paid_order_event
 
@@ -40,6 +43,7 @@ def main():
 
     acc = Account(GOLDEN_KEY, user_agent=USER_AGENT).get()
     patch_send_message_without_bot_prefix(acc)
+    patch_runner_skip_empty_updates()
 
     try:
         chats = acc.request_chats()

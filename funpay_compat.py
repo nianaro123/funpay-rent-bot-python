@@ -7,6 +7,8 @@ import logging
 from types import MethodType, SimpleNamespace
 from typing import Optional
 
+from FunPayAPI.updater.runner import Runner
+
 from FunPayAPI.common import exceptions
 
 LOGGER = logging.getLogger(__name__)
@@ -121,3 +123,54 @@ def _send_message_without_bot_prefix(
             acc.runner.update_last_message(chat_id, text)
 
     return message_obj
+
+
+def patch_runner_skip_empty_updates() -> None:
+    """Make FunPayAPI Runner tolerate empty long-poll objects from FunPay.
+
+    Since June 2026 FunPay can return runner objects with ``data: false`` for
+    unchanged chat/order counters even when older FunPayAPI versions expect a
+    populated ``data`` dict. The stock parser then raises TypeError and the
+    bot prints "Произошла ошибка при получении событий" on every poll.
+    """
+
+    if getattr(Runner, "_rent_bot_skip_empty_updates_patch", False):
+        return
+
+    original_parse_updates = Runner.parse_updates
+
+    def parse_updates_compat(self, updates: dict):
+        objects = updates.get("objects") if isinstance(updates, dict) else None
+        if not isinstance(objects, list):
+            return original_parse_updates(self, updates)
+
+        filtered_objects = []
+        skipped_empty = 0
+        for obj in objects:
+            if not isinstance(obj, dict):
+                filtered_objects.append(obj)
+                continue
+
+            obj_type = obj.get("type")
+            if obj_type in {"chat_bookmarks", "orders_counters"} and not obj.get("data"):
+                skipped_empty += 1
+                tag = obj.get("tag")
+                if tag:
+                    if obj_type == "chat_bookmarks":
+                        self._Runner__last_msg_event_tag = tag
+                    else:
+                        self._Runner__last_order_event_tag = tag
+                continue
+
+            filtered_objects.append(obj)
+
+        if skipped_empty:
+            LOGGER.debug("Skipped %s empty FunPay runner object(s).", skipped_empty)
+
+        if not filtered_objects:
+            return []
+
+        return original_parse_updates(self, {**updates, "objects": filtered_objects})
+
+    Runner.parse_updates = parse_updates_compat
+    Runner._rent_bot_skip_empty_updates_patch = True
